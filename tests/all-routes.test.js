@@ -347,6 +347,10 @@ test('all 730 production routes build runtime spoken steps that round to at leas
         distanceRoundingMeters: 1
       }
     );
+    assert.ok(
+      stepPath.rawPointIndexes.length - 1 <= 10,
+      `${key}: runtime route must not expose more than 10 movement steps`
+    );
     assert.equal(stepPath.rawPointIndexes[0], 0, `${key}: runtime start endpoint`);
     assert.equal(
       stepPath.rawPointIndexes.at(-1),
@@ -418,6 +422,37 @@ test('all 730 production routes build runtime spoken steps that round to at leas
 
   assert.equal(checkedRoutes, 730);
   assert.ok(checkedSpokenSteps > 0);
+});
+
+test('routes starting from the pediatric ward stay within ten meaningful movement steps', () => {
+  const departmentNames = routes.getDepartmentNames();
+
+  for (const destinationName of departmentNames) {
+    if (destinationName === '儿科病房') continue;
+
+    const plan = routes.createNavigationPlan('儿科病房', destinationName);
+    if (plan.status !== 'route') continue;
+
+    let movementSteps = 0;
+    for (const leg of plan.legs) {
+      const stepPath = routeMath.buildSpokenStepPath(
+        leg.points,
+        leg.routePath && leg.routePath.semanticPointIndexes,
+        {
+          imageSize: leg.imageSize,
+          distanceMetersPerPercent: 1.2,
+          minimumSpokenStepMeters: 0.5,
+          distanceRoundingMeters: 1
+        }
+      );
+      movementSteps += Math.max(0, stepPath.rawPointIndexes.length - 1);
+    }
+
+    assert.ok(
+      movementSteps <= 10,
+      `儿科病房 -> ${destinationName}: ${movementSteps} meaningful movement steps`
+    );
+  }
 });
 
 test('all 42 by 41 directed destination pairs return only safe route outcomes', () => {

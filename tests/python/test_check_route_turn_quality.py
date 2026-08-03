@@ -92,6 +92,19 @@ def six_same_direction_turns():
     ]
 
 
+def eleven_same_direction_turns():
+    points = [[50, 50]]
+    x, y = points[0]
+    directions = ((1, 0), (0, 1), (-1, 0), (0, -1))
+    for index in range(12):
+        dx, dy = directions[index % len(directions)]
+        distance = index + 1
+        x += dx * distance
+        y += dy * distance
+        points.append([x, y])
+    return points
+
+
 def moving_record(points, *, solver_status="optimized", **overrides):
     checker = load_checker()
     metrics = checker.analyze_geometry(points, (100, 100))
@@ -491,6 +504,20 @@ def test_matching_high_turn_approval_passes_and_stale_hash_fails(tmp_path):
     assert approved.returncode == 0, approved.stdout + approved.stderr
     assert stale.returncode == 1
     assert "staleReview" in stale.stdout
+
+
+def test_more_than_ten_turns_cannot_be_approved(tmp_path):
+    points = eleven_same_direction_turns()
+    record = moving_record(points)
+
+    result, *_ = run_checker(
+        tmp_path,
+        {"儿科病房|||目的地": record},
+        reviews=[review(record["geometrySha256"])],
+    )
+
+    assert result.returncode == 1
+    assert "excessiveTurns 11 exceeds 10; route must be replanned" in result.stdout
 
 
 def test_fallback_requires_fallback_specific_approval(tmp_path):
