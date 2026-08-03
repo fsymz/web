@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>院内导航离线演示</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root {
+      color: #153449;
+      background: #eef5f8;
+      font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 320px; }
+    button, select { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: .48; }
+    .shell { width: min(1080px, calc(100% - 28px)); margin: 0 auto; padding: 28px 0 48px; }
+    .hero {
+      padding: 28px;
+      border-radius: 24px;
+      color: #fff;
+      background: linear-gradient(135deg, #087f83, #075e73);
+      box-shadow: 0 18px 40px rgba(14, 68, 80, .18);
+    }
+    .eyebrow { margin: 0 0 8px; font-size: 14px; letter-spacing: .12em; opacity: .82; }
+    h1 { margin: 0; font-size: clamp(28px, 5vw, 44px); }
+    .hero-copy { max-width: 720px; margin: 12px 0 0; line-height: 1.8; }
+    .offline-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 18px;
+      padding: 7px 12px;
+      border: 1px solid rgba(255,255,255,.5);
+      border-radius: 999px;
+      font-size: 14px;
+    }
+    .offline-dot { width: 9px; height: 9px; border-radius: 50%; background: #8ff5c4; }
+    .panel {
+      margin-top: 20px;
+      padding: 22px;
+      border: 1px solid #d7e5ea;
+      border-radius: 20px;
+      background: #fff;
+      box-shadow: 0 10px 30px rgba(20, 67, 82, .08);
+    }
+    .panel h2 { margin: 0 0 18px; font-size: 22px; }
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr auto; gap: 14px; align-items: end; }
+    label { display: grid; gap: 8px; font-weight: 700; }
+    select {
+      width: 100%;
+      min-height: 48px;
+      padding: 0 42px 0 14px;
+      border: 1px solid #b9ccd4;
+      border-radius: 12px;
+      color: #153449;
+      background: #fff;
+    }
+    select:focus, button:focus-visible { outline: 3px solid rgba(8,127,131,.26); outline-offset: 2px; }
+    .primary {
+      min-height: 48px;
+      padding: 0 24px;
+      border: 0;
+      border-radius: 12px;
+      color: #fff;
+      background: #087f83;
+      font-weight: 700;
+    }
+    .status {
+      margin-top: 18px;
+      padding: 14px 16px;
+      border-radius: 12px;
+      background: #eef8f6;
+      line-height: 1.7;
+    }
+    .status[data-status="coLocated"] { background: #fff6dc; color: #614a00; }
+    .status[data-status="error"], .status[data-status="noCommonElevator"] { background: #fff0ee; color: #852f27; }
+    .status:empty { display: none; }
+    .summary { display: flex; flex-wrap: wrap; gap: 10px; margin: 14px 0; }
+    .summary span { padding: 7px 11px; border-radius: 999px; background: #e9f1f4; font-size: 14px; }
+    .map-card { overflow: hidden; border: 1px solid #d7e5ea; border-radius: 16px; background: #f8fbfc; }
+    .map-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px; }
+    .map-toolbar button {
+      min-height: 40px;
+      padding: 0 15px;
+      border: 1px solid #98b5c0;
+      border-radius: 10px;
+      color: #075e73;
+      background: #fff;
+      font-weight: 700;
+    }
+    .leg-title { flex: 1; text-align: center; font-weight: 700; }
+    .map-stage { position: relative; width: 100%; max-width: 780px; margin: 0 auto; background: #fff; }
+    .map-stage img { display: block; width: 100%; height: auto; }
+    .route-line { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+    .instruction { padding: 14px 16px; margin: 0; line-height: 1.7; }
+    .hidden { display: none !important; }
+    .privacy-note { margin: 18px 0 0; color: #54717d; font-size: 14px; line-height: 1.8; }
+    @media (max-width: 760px) {
+      .shell { width: min(100% - 18px, 1080px); padding-top: 10px; }
+      .hero, .panel { padding: 18px; border-radius: 16px; }
+      .form-grid { grid-template-columns: 1fr; }
+      .primary { width: 100%; }
+      .map-toolbar { display: grid; grid-template-columns: auto 1fr auto; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <p class="eyebrow">患者与访客路线模拟</p>
+      <h1>院内导航</h1>
+      <p class="hero-copy">手动选择当前位置和目的地，查看楼层路线。此演示与小程序共用同一套路由数据，不读取您的定位。</p>
+      <div class="offline-badge"><span class="offline-dot"></span>核心导航完全离线</div>
+    </header>
+
+    <section class="panel" aria-labelledby="query-heading">
+      <h2 id="query-heading">查询路线</h2>
+      <form id="route-form" class="form-grid">
+        <label>
+          当前位置
+          <select data-testid="from-select" id="from-select" required>
+            <option value="">请选择当前位置</option>
+          </select>
+        </label>
+        <label>
+          目的地
+          <select data-testid="to-select" id="to-select" required>
+            <option value="">请选择目的地</option>
+          </select>
+        </label>
+        <button class="primary" type="submit">查询路线</button>
+      </form>
+
+      <div class="status" data-testid="plan-status" data-status="" role="status" aria-live="polite"></div>
+      <div id="route-result" class="hidden">
+        <div class="summary">
+          <span>路线段数：<strong data-testid="leg-count" id="leg-count">0</strong></span>
+          <span>推荐电梯：<strong data-testid="selected-shaft" id="selected-shaft">无需乘梯</strong></span>
+        </div>
+        <div class="map-card">
+          <div class="map-toolbar">
+            <button type="button" id="previous-leg">上一段</button>
+            <div class="leg-title" id="leg-title"></div>
+            <button type="button" id="next-leg">下一段</button>
+          </div>
+          <div id="map-host"></div>
+          <p class="instruction" id="leg-instruction"></p>
+        </div>
+      </div>
+      <p class="privacy-note">不需要 GPS、账号或后端；页面不保存您的位置、目的地或路线历史。</p>
+    </section>
+  </main>
+
+  <script src="navigation.bundle.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
