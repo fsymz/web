@@ -22,6 +22,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 SPOKEN_TURN_DEGREES = 25.0
+MAX_ALLOWED_TURNS = 10
 LOW_ANGLE_DEGREES = 5.0
 MICRO_ZIGZAG_ALTERNATIONS = 5
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -564,6 +565,11 @@ def validate_routes(
                     approval_bearing_hashes.add(record_hash)
             if fallback and decision != "approvedFallbackAfterVisualReview":
                 failures.append(f"{prefix}: fallbackApprovalRequired for {record_hash}")
+            elif metrics.spoken_turn_count > MAX_ALLOWED_TURNS:
+                failures.append(
+                    f"{prefix}: excessiveTurns {metrics.spoken_turn_count} "
+                    f"exceeds {MAX_ALLOWED_TURNS}; route must be replanned"
+                )
             elif metrics.spoken_turn_count > 5 and decision != "approvedNecessaryComplexGeometry":
                 failures.append(f"{prefix}: reviewRequired for {record_hash}")
             rows.append(
