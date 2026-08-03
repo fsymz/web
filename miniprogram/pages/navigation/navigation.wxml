@@ -1,0 +1,284 @@
+<view class="container">
+  <view class="ai-hero">
+    <view class="ai-hero-text">我是医院导航系统，请问你要去哪里？</view>
+    <button
+      class="ai-orb {{recordState === 'recording' && voiceMode === 'agent' ? 'ai-orb-active' : ''}}"
+      bindtap="openAgentAssistant"
+    >
+      AI
+    </button>
+  </view>
+
+  <view class="search-container">
+    <input
+      class="search-input"
+      type="text"
+      placeholder="你的位置"
+      value="{{inputVal1}}"
+      bindinput="onInput1"
+      bindfocus="onFocus1"
+    />
+    <button class="search-button" bindtap="onSearch1">确定</button>
+  </view>
+  <view class="suggestions" wx:if="{{showSuggestions1}}">
+    <view
+      class="suggestion-item"
+      wx:for="{{suggestions1}}"
+      wx:key="index"
+      data-name="{{item}}"
+      bindtap="selectSuggestion1"
+    >
+      {{item}}
+    </view>
+  </view>
+
+  <view class="search-container search-container-second">
+    <input
+      class="search-input"
+      type="text"
+      placeholder="你的目的地"
+      value="{{inputVal2}}"
+      bindinput="onInput2"
+      bindfocus="onFocus2"
+    />
+    <button
+      class="voice-button {{recordState === 'recording' && voiceMode === 'destination' ? 'voice-button-active' : ''}}"
+      bindtap="toggleVoiceInput"
+      disabled="{{voiceRecognitionTainted || voiceDrainActive || recordState === 'starting' || recordState === 'stopping' || (recordState === 'recording' && voiceMode !== 'destination')}}"
+    >
+      {{voiceMode === 'destination' && recordState === 'recording' ? '停止' : (voiceMode === 'destination' && recordState === 'starting' ? '准备中' : (voiceMode === 'destination' && recordState === 'stopping' ? '停止中' : '语音'))}}
+    </button>
+    <button class="search-button" bindtap="onSearch2">搜索</button>
+  </view>
+  <view class="voice-tip">{{voiceTip}}</view>
+  <view class="voice-tip" wx:if="{{speechStatusText}}">{{speechStatusText}}</view>
+  <button
+    wx:if="{{recordPermissionDenied}}"
+    class="record-settings-button"
+    bindtap="openRecordPermissionSettings"
+  >
+    开启麦克风权限
+  </button>
+  <view class="suggestions" wx:if="{{showSuggestions2}}">
+    <view
+      class="suggestion-item"
+      wx:for="{{suggestions2}}"
+      wx:key="index"
+      data-name="{{item}}"
+      bindtap="selectSuggestion2"
+    >
+      {{item}}
+    </view>
+  </view>
+
+  <view class="agent-card" wx:if="{{showAgentPanel}}">
+    <view class="agent-card-header">
+      <view class="agent-title">AI智能导诊</view>
+      <button class="agent-close-button" bindtap="closeAgentAssistant">收起</button>
+    </view>
+    <scroll-view scroll-y class="agent-messages">
+      <view
+        wx:for="{{agentMessages}}"
+        wx:key="index"
+        class="agent-message {{item.role === 'user' ? 'agent-message-user' : 'agent-message-assistant'}}"
+      >
+        {{item.text}}
+      </view>
+    </scroll-view>
+    <view class="agent-input-row">
+      <input
+        class="agent-input"
+        type="text"
+        placeholder="问：我要去缴费 / 骨一科在几楼"
+        value="{{agentInput}}"
+        bindinput="onAgentInput"
+        confirm-type="send"
+        bindconfirm="sendAgentMessage"
+      />
+      <button
+        class="agent-voice-button {{recordState === 'recording' && voiceMode === 'agent' ? 'agent-voice-active' : ''}}"
+        bindtap="toggleAgentVoiceInput"
+        disabled="{{voiceRecognitionTainted || voiceDrainActive || recordState === 'starting' || recordState === 'stopping' || (recordState === 'recording' && voiceMode !== 'agent')}}"
+      >
+        {{voiceMode === 'agent' && recordState === 'recording' ? '停止' : (voiceMode === 'agent' && recordState === 'starting' ? '准备中' : (voiceMode === 'agent' && recordState === 'stopping' ? '停止中' : '语音问'))}}
+      </button>
+      <button class="agent-send-button" bindtap="sendAgentMessage">发送</button>
+    </view>
+  </view>
+
+  <view class="nav-mode-switch">
+    <button
+      class="nav-mode-button {{navMode === 'step' ? 'nav-mode-button-active' : ''}}"
+      data-mode="step"
+      bindtap="setNavigationMode"
+    >
+      一令一动
+    </button>
+    <button
+      class="nav-mode-button {{navMode === 'loop' ? 'nav-mode-button-active' : ''}}"
+      data-mode="loop"
+      bindtap="setNavigationMode"
+    >
+      循环
+    </button>
+  </view>
+
+  <view class="preview-message" wx:if="{{previewMessage}}">{{previewMessage}}</view>
+
+  <button
+    class="navigation-button"
+    bindtap="startNavigation"
+    disabled="{{!inputVal1 || !inputVal2}}"
+  >
+    开始导航
+  </button>
+
+  <view class="image-containers" wx:if="{{currentPreviewLeg && !showNavigationPopup}}">
+    <view class="image-container">
+      <view class="image-title">{{currentPreviewLeg.title}}</view>
+      <view class="preview-toolbar">
+        <button
+          class="preview-switch-button"
+          bindtap="showPreviousPreviewLeg"
+          disabled="{{previewLegIndex === 0}}"
+        >上一段</button>
+        <view class="preview-subtitle">第 {{previewLegIndex + 1}} / {{previewLegCount}} 段 · {{currentPreviewLeg.floor}}</view>
+        <button
+          class="preview-switch-button"
+          bindtap="showNextPreviewLeg"
+          disabled="{{previewLegIndex + 1 >= previewLegCount}}"
+        >下一段</button>
+      </view>
+      <movable-area class="preview-movable-area">
+        <movable-view
+          class="preview-movable-view"
+          direction="all"
+          scale="{{true}}"
+          scale-min="1"
+          scale-max="4"
+          out-of-bounds="{{true}}"
+        >
+          <view class="preview-image-stage">
+            <image
+              class="image"
+              src="{{currentPreviewLeg.image}}"
+              mode="aspectFit"
+              bindtap="previewImage"
+            />
+            <view
+              wx:for="{{currentPreviewLeg.lineSegments}}"
+              wx:for-item="segment"
+              wx:for-index="segIndex"
+              wx:key="segIndex"
+              class="preview-line-segment"
+              style="left: {{segment.left}}%; top: {{segment.top}}%; width: {{segment.width}}%; transform: translateY(-50%) rotate({{segment.angle}}deg);"
+            ></view>
+          </view>
+        </movable-view>
+      </movable-area>
+    </view>
+  </view>
+
+  <view class="overlay" wx:if="{{showNavigationPopup}}" bindtap="navigationClose"></view>
+
+  <view class="floating-window" wx:if="{{showNavigationPopup}}" catchtap="stopPropagation">
+    <view class="nav-header">
+      <view class="nav-header-copy">
+        <view class="nav-title">{{navStepTitle}}</view>
+        <view class="nav-subtitle">第 {{currentImageIndex + 1}} / {{navigationLegCount}} 段</view>
+      </view>
+      <button class="nav-close-button" bindtap="navigationClose">退出</button>
+    </view>
+
+    <view class="instruction-bar">
+      <view class="instruction-icon">▲</view>
+      <view class="instruction-text">{{navInstruction}}</view>
+    </view>
+    <view class="voice-tip" wx:if="{{speechStatusText}}">{{speechStatusText}}</view>
+
+    <view class="nav-stats">
+      <view class="nav-stat-item">
+        <view class="nav-stat-label">当前楼层</view>
+        <view class="nav-stat-value">{{navFloor}}</view>
+      </view>
+      <view class="nav-stat-item">
+        <view class="nav-stat-label">剩余距离</view>
+        <view class="nav-stat-value">{{navDistanceText}}</view>
+      </view>
+      <view class="nav-stat-item">
+        <view class="nav-stat-label">预计时间</view>
+        <view class="nav-stat-value">{{navEtaText}}</view>
+      </view>
+    </view>
+
+    <scroll-view scroll-y class="nav-scroll-body">
+      <movable-area class="nav-movable-area">
+        <movable-view
+          class="nav-movable-view"
+          direction="all"
+          scale="{{true}}"
+          scale-min="1"
+          scale-max="4"
+          out-of-bounds="{{true}}"
+        >
+          <view class="nav-image-stage">
+            <image
+              class="navigation-image"
+              src="{{currentLeg.image}}"
+              mode="aspectFit"
+              bindtap="previewNavigationImage"
+            />
+
+            <view
+              wx:for="{{navLineSegments}}"
+              wx:key="index"
+              class="nav-line-segment"
+              style="left: {{item.left}}%; top: {{item.top}}%; width: {{item.width}}%; transform: translateY(-50%) rotate({{item.angle}}deg);"
+            ></view>
+
+            <view
+              wx:if="{{markerVisible}}"
+              class="nav-marker"
+              style="left: {{markerX}}%; top: {{markerY}}%; transform: translate(-50%, -50%) rotate({{markerAngle}}deg);"
+            >
+              <view class="nav-marker-heading"></view>
+            </view>
+          </view>
+        </movable-view>
+      </movable-area>
+    </scroll-view>
+
+    <view class="nav-bottom-panel">
+      <view class="nav-mode-switch nav-mode-switch-in-popup">
+        <button
+          class="nav-mode-button {{navMode === 'step' ? 'nav-mode-button-active' : ''}}"
+          data-mode="step"
+          bindtap="setNavigationMode"
+        >
+          一令一动
+        </button>
+        <button
+          class="nav-mode-button {{navMode === 'loop' ? 'nav-mode-button-active' : ''}}"
+          data-mode="loop"
+          bindtap="setNavigationMode"
+        >
+          循环
+        </button>
+      </view>
+
+      <view class="progress-row">
+        <view class="progress-text">模拟进度 {{navProgress}}%</view>
+        <view class="progress-track">
+          <view class="progress-inner" style="width: {{navProgress}}%;"></view>
+        </view>
+      </view>
+
+      <view class="nav-control-row">
+        <button wx:if="{{isSimulating && navMode === 'loop'}}" class="control-button secondary" bindtap="pauseNavigation">暂停</button>
+        <button wx:if="{{isPaused && navMode === 'loop'}}" class="control-button primary" bindtap="resumeNavigation">继续</button>
+        <button class="control-button secondary" bindtap="replayNavigation">重播</button>
+        <button wx:if="{{navMode === 'step'}}" class="control-button primary" bindtap="navigationNext">下一步</button>
+      </view>
+    </view>
+  </view>
+</view>

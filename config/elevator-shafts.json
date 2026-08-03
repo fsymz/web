@@ -1,0 +1,330 @@
+[
+  {
+    "shaftId": "S1",
+    "displayName": "1号电梯",
+    "patientAccessible": true,
+    "serviceFloors": [
+      "1楼",
+      "2楼",
+      "3楼",
+      "4楼",
+      "5楼",
+      "6楼",
+      "7楼",
+      "8楼",
+      "9楼",
+      "10楼",
+      "11楼",
+      "12楼",
+      "13楼"
+    ],
+    "floorMappings": {
+      "1楼": {
+        "elevatorGroupId": "E1",
+        "confirmed": true
+      },
+      "2楼": {
+        "elevatorGroupId": "E1",
+        "confirmed": true
+      },
+      "3楼": {
+        "elevatorGroupId": "E1",
+        "confirmed": true
+      },
+      "4楼": {
+        "elevatorGroupId": "E1",
+        "confirmed": true
+      },
+      "5楼": {
+        "elevatorGroupId": "E1",
+        "confirmed": true
+      },
+      "6楼": {
+        "elevatorGroupId": "E1",
+        "confirmed": true
+      },
+      "7楼": {
+        "elevatorGroupId": "E1",
+        "confirmed": true
+      },
+      "8楼": {
+        "elevatorGroupId": "E1",
+        "confirmed": true
+      },
+      "9楼": {
+        "elevatorGroupId": "E1",
+        "confirmed": true
+      },
+      "10楼": {
+        "elevatorGroupId": "E1",
+        "confirmed": true
+      },
+      "11楼": {
+        "elevatorGroupId": "E1",
+        "confirmed": true
+      },
+      "12楼": {
+        "elevatorGroupId": "E1",
+        "confirmed": true
+      },
+      "13楼": {
+        "elevatorGroupId": "E1",
+        "confirmed": true
+      }
+    }
+  },
+  {
+    "shaftId": "S2",
+    "displayName": "2号电梯",
+    "patientAccessible": true,
+    "serviceFloors": [
+      "1楼",
+      "2楼",
+      "3楼",
+      "4楼",
+      "5楼",
+      "6楼",
+      "7楼",
+      "8楼",
+      "9楼",
+      "10楼",
+      "11楼",
+      "12楼",
+      "13楼"
+    ],
+    "floorMappings": {
+      "1楼": {
+        "elevatorGroupId": "E2",
+        "confirmed": true
+      },
+      "2楼": {
+        "elevatorGroupId": "E2",
+        "confirmed": true
+      },
+      "3楼": {
+        "elevatorGroupId": "E2",
+        "confirmed": true
+      },
+      "4楼": {
+        "elevatorGroupId": "E2",
+        "confirmed": true
+      },
+      "5楼": {
+        "elevatorGroupId": "E2",
+        "confirmed": true
+      },
+      "6楼": {
+        "elevatorGroupId": "E2",
+        "confirmed": true
+      },
+      "7楼": {
+        "elevatorGroupId": "E2",
+        "confirmed": true
+      },
+      "8楼": {
+        "elevatorGroupId": "E2",
+        "confirmed": true
+      },
+      "9楼": {
+        "elevatorGroupId": "E2",
+        "confirmed": true
+      },
+      "10楼": {
+        "elevatorGroupId": "E2",
+        "confirmed": true
+      },
+      "11楼": {
+        "elevatorGroupId": "E2",
+        "confirmed": true
+      },
+      "12楼": {
+        "elevatorGroupId": "E2",
+        "confirmed": true
+      },
+      "13楼": {
+        "elevatorGroupId": "E2",
+        "confirmed": true
+      }
+    }
+  },
+  {
+    "shaftId": "S3",
+    "displayName": "3号电梯",
+    "patientAccessible": true,
+    "serviceFloors": [
+      "1楼",
+      "2楼",
+      "3楼",
+      "4楼",
+      "5楼",
+      "6楼",
+      "7楼",
+      "8楼",
+      "9楼",
+      "10楼",
+      "11楼",
+      "12楼",
+      "13楼"
+    ],
+    "floorMappings": {
+      "1楼": {
+        "elevatorGroupId": "E3",
+        "confirmed": true
+      },
+      "2楼": {
+        "elevatorGroupId": "E3",
+        "confirmed": true
+      },
+      "3楼": {
+        "elevatorGroupId": "E3",
+        "confirmed": true
+      },
+      "4楼": {
+        "elevatorGroupId": "E3",
+        "confirmed": true
+      },
+      "5楼": {
+        "elevatorGroupId": "E3",
+        "confirmed": true
+      },
+      "6楼": {
+        "elevatorGroupId": "E3",
+        "confirmed": true
+      },
+      "7楼": {
+        "elevatorGroupId": "E3",
+        "confirmed": true
+      },
+      "8楼": {
+        "elevatorGroupId": "E3",
+        "confirmed": true
+      },
+      "9楼": {
+        "elevatorGroupId": "E3",
+        "confirmed": true
+      },
+      "10楼": {
+        "elevatorGroupId": "E3",
+        "confirmed": true
+      },
+      "11楼": {
+        "elevatorGroupId": "E3",
+        "confirmed": true
+      },
+      "12楼": {
+        "elevatorGroupId": "E3",
+        "confirmed": true
+      },
+      "13楼": {
+        "elevatorGroupId": "E3",
+        "confirmed": true
+      }
+    }
+  },
+  {
+    "shaftId": "S4",
+    "displayName": "4号电梯",
+    "patientAccessible": true,
+    "serviceFloors": [
+      "1楼",
+      "2楼",
+      "3楼",
+      "4楼"
+    ],
+    "floorMappings": {
+      "1楼": {
+        "elevatorGroupId": "E4",
+        "confirmed": true
+      },
+      "2楼": {
+        "elevatorGroupId": "E4",
+        "confirmed": true
+      },
+      "3楼": {
+        "elevatorGroupId": "E4",
+        "confirmed": true
+      },
+      "4楼": {
+        "elevatorGroupId": "E4",
+        "confirmed": true
+      }
+    }
+  },
+  {
+    "shaftId": "S5",
+    "displayName": "5号电梯",
+    "patientAccessible": true,
+    "serviceFloors": [
+      "1楼",
+      "2楼",
+      "3楼",
+      "4楼"
+    ],
+    "floorMappings": {
+      "1楼": {
+        "elevatorGroupId": "E5",
+        "confirmed": true
+      },
+      "2楼": {
+        "elevatorGroupId": "E5",
+        "confirmed": true
+      },
+      "3楼": {
+        "elevatorGroupId": "E5",
+        "confirmed": true
+      },
+      "4楼": {
+        "elevatorGroupId": "E5",
+        "confirmed": true
+      }
+    }
+  },
+  {
+    "shaftId": "S6",
+    "displayName": "6号电梯",
+    "patientAccessible": true,
+    "serviceFloors": [
+      "1楼",
+      "2楼",
+      "3楼",
+      "4楼"
+    ],
+    "floorMappings": {
+      "1楼": {
+        "elevatorGroupId": "E6",
+        "confirmed": true
+      },
+      "2楼": {
+        "elevatorGroupId": "E6",
+        "confirmed": true
+      },
+      "3楼": {
+        "elevatorGroupId": "E6",
+        "confirmed": true
+      },
+      "4楼": {
+        "elevatorGroupId": "E6",
+        "confirmed": true
+      }
+    }
+  },
+  {
+    "shaftId": "S7",
+    "displayName": "7号电梯",
+    "patientAccessible": true,
+    "serviceFloors": [
+      "3楼",
+      "4楼"
+    ],
+    "floorMappings": {
+      "3楼": {
+        "elevatorGroupId": "E7",
+        "confirmed": true
+      },
+      "4楼": {
+        "elevatorGroupId": "E7",
+        "confirmed": true
+      }
+    }
+  }
+]

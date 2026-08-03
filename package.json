@@ -1,0 +1,18 @@
+{
+  "name": "hospital-navigation-offline-mini-program",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "node --test",
+    "test:python": "node scripts/run-python.js -m pytest tests/python -q --basetemp=reports/test-temp/python",
+    "test:web": "node scripts/build-web-bundle.js --check web-demo/navigation.bundle.js && playwright test tests/web-demo.spec.js",
+    "test:wechat": "node scripts/wechat-smoke.js",
+    "verify": "node scripts/run-python.js scripts/verify-release.py --release",
+    "verify:candidate": "node scripts/run-python.js scripts/verify-release.py --candidate",
+    "verify:release": "node scripts/run-python.js scripts/verify-release.py --release"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1",
+    "miniprogram-automator": "0.12.1"
+  }
+}
