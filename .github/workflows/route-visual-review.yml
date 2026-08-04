@@ -8,10 +8,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   regression:
+    if: github.event_name != 'push' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -23,4 +24,25 @@ jobs:
       - name: Install Python dependencies
         run: python -m pip install -r requirements.txt
       - name: Run route simplification regression
-        run: python -m pytest tests/python/test_route_visual_simplification.py -q
+        id: regression
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir -p reports/route-visual-review
+          set -o pipefail
+          python -m pytest tests/python/test_route_visual_simplification.py -q 2>&1 | tee reports/route-visual-review/regression.log
+      - name: Record push-run evidence
+        if: always() && github.event_name == 'push'
+        shell: bash
+        run: |
+          printf '%s\n' '${{ steps.regression.outcome }}' > reports/route-visual-review/regression-outcome.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add reports/route-visual-review/regression.log reports/route-visual-review/regression-outcome.txt
+          if ! git diff --cached --quiet; then
+            git commit -m 'Record route regression result'
+            git push origin HEAD:agent/route-visual-audit
+          fi
+      - name: Enforce regression result
+        if: steps.regression.outcome == 'failure'
+        run: exit 1
