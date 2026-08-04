@@ -1,6 +1,8 @@
 name: Route visual review
 
 on:
+  push:
+    branches: [agent/route-visual-audit]
   pull_request:
     branches: [main]
   workflow_dispatch:
