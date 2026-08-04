@@ -6,6 +6,8 @@ from routing_surface import RoutingSurface, line_is_safe
 from safe_path_solver import (
     SolveContext,
     SolverDiagnostics,
+    TurnLabel,
+    _label_is_better,
     optimize_visible_path,
 )
 
@@ -22,6 +24,13 @@ def _open_surface(width: int, height: int) -> RoutingSurface:
         hard_forbidden_mask=blocked,
         cell_size_px=1,
     )
+
+
+def test_equal_quality_label_prefers_fewer_segments() -> None:
+    simpler = TurnLabel(8.0, 10.0, (0, 8))
+    redundant = TurnLabel(8.0, 10.0, tuple(range(9)))
+
+    assert _label_is_better(simpler, redundant)
 
 
 def test_optimizer_collapses_visible_collinear_seed_points() -> None:
