@@ -103,6 +103,15 @@ def patch_visual_audit_exact_collinearity() -> bool:
     )
 
 
+def patch_simplifier_output_order() -> bool:
+    return replace_once_or_verify(
+        ROOT / "scripts" / "simplify-existing-route-paths.py",
+        "    return output, summary\n",
+        """    ordered_output = {key: output[key] for key in records}\n    return ordered_output, summary\n""",
+        label="stable route export ordering",
+    )
+
+
 def main() -> int:
     changed = {
         "solver": patch_solver(),
@@ -110,6 +119,7 @@ def main() -> int:
         "versionedLoaderAndTests": patch_versioned_loader_and_tests(),
         "regression": patch_regression_expectation(),
         "visualAuditExactCollinearity": patch_visual_audit_exact_collinearity(),
+        "stableRouteOrder": patch_simplifier_output_order(),
     }
     print(json.dumps(changed, ensure_ascii=False, sort_keys=True))
     return 0
