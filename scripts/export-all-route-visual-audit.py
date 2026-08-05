@@ -180,7 +180,7 @@ def geometry_flags(
     size: tuple[float, float],
 ) -> tuple[int, int, int]:
     angles = geometry_angles(points, size)
-    redundant = sum(angle < 0.01 for angle in angles)
+    redundant = sum(angle < 1e-9 for angle in angles)
     low_sign: int | None = None
     alternations = 0
     maximum_alternations = 0

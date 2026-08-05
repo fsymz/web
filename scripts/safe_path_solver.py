@@ -493,7 +493,14 @@ def _forward_shortest_path(
             better = candidate_distance < distances[edge.target]
             tied_better_path = (
                 candidate_distance == distances[edge.target]
-                and (known_path is None or candidate_path < known_path)
+                and (
+                    known_path is None
+                    or len(candidate_path) < len(known_path)
+                    or (
+                        len(candidate_path) == len(known_path)
+                        and candidate_path < known_path
+                    )
+                )
             )
             if better or tied_better_path:
                 distances[edge.target] = candidate_distance
@@ -658,6 +665,8 @@ def _label_is_better(candidate: TurnLabel, existing: TurnLabel) -> bool:
         return candidate.distance < existing.distance
     if candidate.min_clearance_px != existing.min_clearance_px:
         return candidate.min_clearance_px > existing.min_clearance_px
+    if len(candidate.path) != len(existing.path):
+        return len(candidate.path) < len(existing.path)
     return candidate.path < existing.path
 
 

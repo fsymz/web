@@ -583,7 +583,8 @@ def simplify_route_file(
     if summary["changedRouteCount"] and summary["pointsRemoved"] <= 0:
         summary["failures"].append("route geometry changed without removing points")
     summary["failures"] = sorted(set(summary["failures"]))
-    return output, summary
+    ordered_output = {key: output[key] for key in records}
+    return ordered_output, summary
 
 
 def build_parser() -> argparse.ArgumentParser:
