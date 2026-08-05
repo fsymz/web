@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "algorithmVersion": "grid-a-star-visible-local-v1",
+  "algorithmVersion": "grid-a-star-visible-local-v2",
   "defaults": {
     "cellSizePx": 6,
     "walkTolerance": 14,

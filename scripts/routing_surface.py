@@ -20,7 +20,7 @@ from PIL import Image
 from project_paths import resolve_floor_map, sha256_file
 
 
-ALGORITHM_VERSION = "grid-a-star-visible-local-v1"
+ALGORITHM_VERSION = "grid-a-star-visible-local-v2"
 WALK_RGB = np.array([0xDC, 0xDE, 0xDD], dtype=np.int16)
 WALL_RGB = np.array([0x66, 0x5B, 0x5D], dtype=np.int16)
 REVIEW_STATUSES = frozenset(

@@ -547,7 +547,7 @@ def test_optional_candidates_never_escape_the_greedy_radius_windows():
     assert all(index in {0, 1, 9, 10} for index in dag.seed_indexes)
 
 
-def test_equal_distance_dag_paths_choose_lexicographically_smallest_indexes():
+def test_equal_distance_dag_paths_choose_fewest_segments_before_indexes():
     safe = surface(np.ones((3, 7), dtype=bool))
     seed = [(0, 1), (2, 1), (4, 1), (6, 1)]
     dag = build_local_candidate_dag(
@@ -559,7 +559,7 @@ def test_equal_distance_dag_paths_choose_lexicographically_smallest_indexes():
     )
     assert dag is not None
     assert dag.shortest_distance == pytest.approx(6.0, abs=1e-9)
-    assert dag.shortest_path == (0, 1, 2, 3)
+    assert dag.shortest_path == (0, 3)
 
 
 def test_epsilon_close_longer_dag_path_cannot_replace_strict_shortest_path():

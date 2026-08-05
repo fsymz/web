@@ -66,7 +66,7 @@ NEW_DEFAULTS = {
 def valid_document() -> dict:
     return {
         "schemaVersion": 1,
-        "algorithmVersion": "grid-a-star-visible-local-v1",
+        "algorithmVersion": "grid-a-star-visible-local-v2",
         "defaults": {
             "cellSizePx": 6,
             "walkTolerance": 14,
@@ -97,7 +97,7 @@ def valid_document() -> dict:
 def fixture_policy(**changes):
     values = {
         "floor": "1楼",
-        "algorithm_version": "grid-a-star-visible-local-v1",
+        "algorithm_version": "grid-a-star-visible-local-v2",
         "source_floor_map_sha256": "a" * 64,
         "cell_size_px": 2,
         "walk_tolerance": 14,
@@ -127,7 +127,7 @@ def test_policy_covers_all_thirteen_authoritative_maps():
     )
 
     assert document["schemaVersion"] == 1
-    assert document["algorithmVersion"] == "grid-a-star-visible-local-v1"
+    assert document["algorithmVersion"] == "grid-a-star-visible-local-v2"
     assert document["defaults"] == {
         "cellSizePx": 6,
         "walkTolerance": 14,
@@ -184,7 +184,7 @@ def test_policy_loads_case_insensitive_hash_and_normalized_polygons():
 
     assert isinstance(policy, FloorRoutingPolicy)
     assert policy.floor == "1楼"
-    assert policy.algorithm_version == "grid-a-star-visible-local-v1"
+    assert policy.algorithm_version == "grid-a-star-visible-local-v2"
     assert policy.source_floor_map_sha256 == "a" * 64
     assert policy.cell_size_px == 6
     assert policy.walk_tolerance == 14
@@ -213,7 +213,7 @@ def test_policy_loads_bounded_grid_solver_parameters():
     document = valid_document()
     policy = load_floor_policy(document, "1楼", "a" * 64)
 
-    assert policy.algorithm_version == "grid-a-star-visible-local-v1"
+    assert policy.algorithm_version == "grid-a-star-visible-local-v2"
     assert policy.endpoint_bridge_radius_cells == 4
     assert policy.local_candidate_limit == 96
     assert policy.local_seed_index_radius == 12

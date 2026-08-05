@@ -60,6 +60,29 @@ async function planRoute(page, from, to) {
   await page.getByRole('button', { name: '查询路线' }).click();
 }
 
+async function expectedPolylinePoints(page, from, to, legIndex) {
+  return page.evaluate(([locationName, destinationName, index]) => {
+    const runtime = window.__navigationRequire('/data/routes.js');
+    const plan = runtime.createNavigationPlan(locationName, destinationName);
+    if (!plan.ok || plan.status !== 'route' || !plan.legs[index]) {
+      throw new Error('expected route leg is unavailable');
+    }
+    if (!Array.isArray(plan.legs[index].points) || plan.legs[index].points.length < 2) {
+      throw new Error('expected route leg has no drawable geometry');
+    }
+    return plan.legs[index].points.map(point => point[0] + ',' + point[1]).join(' ');
+  }, [from, to, legIndex]);
+}
+
+async function expectRenderedPolyline(page, from, to, legIndex) {
+  const expectedPoints = await expectedPolylinePoints(page, from, to, legIndex);
+  const polyline = page.locator('svg.route-line polyline');
+  await expect(polyline).toHaveCount(1);
+  await expect(polyline).toHaveAttribute('points', expectedPoints);
+  await expect(polyline).toHaveAttribute('fill', 'none');
+  await expect(polyline).toHaveAttribute('stroke', '#d91f26');
+}
+
 test('离线 Web 演示使用同一运行时完成同层、跨层与共址查询', async ({ page }) => {
   const observed = observePage(page);
 
@@ -74,6 +97,7 @@ test('离线 Web 演示使用同一运行时完成同层、跨层与共址查询
   await expect(page.getByTestId('plan-status')).toContainText('同层');
   await expect(page.locator('[data-active-floor-map="true"]')).toHaveCount(1);
   await expect(page.getByTestId('active-floor-map')).toHaveAttribute('src', /\/miniprogram\/assets\/floor-maps\/1F\.jpg$/);
+  await expectRenderedPolyline(page, '儿科门诊', '挂号缴费', 0);
 
   await expect(page.locator('#play-audio')).toHaveCount(0);
   await expect(page.locator('audio')).toHaveCount(0);
@@ -84,15 +108,18 @@ test('离线 Web 演示使用同一运行时完成同层、跨层与共址查询
   await expect(page.getByTestId('selected-shaft')).toHaveText('6号电梯');
   await expect(page.getByTestId('leg-count')).toHaveText('2');
   await expect(page.locator('[data-active-floor-map="true"]')).toHaveCount(1);
+  await expectRenderedPolyline(page, '儿科门诊', '妇科门诊', 0);
   const firstMap = await page.getByTestId('active-floor-map').getAttribute('src');
   await page.getByRole('button', { name: '下一段' }).click();
   await expect(page.locator('[data-active-floor-map="true"]')).toHaveCount(1);
   await expect(page.getByTestId('active-floor-map')).not.toHaveAttribute('src', firstMap);
+  await expectRenderedPolyline(page, '儿科门诊', '妇科门诊', 1);
 
   await planRoute(page, '中药房', '西药房');
   await expect(page.getByTestId('plan-status')).toHaveAttribute('data-status', 'coLocated');
   await expect(page.getByTestId('plan-status')).toContainText('同一区域');
   await expect(page.locator('[data-active-floor-map="true"]')).toHaveCount(0);
+  await expect(page.locator('svg.route-line')).toHaveCount(0);
 
   expect(observed.consoleErrors).toEqual([]);
   expect(observed.pageErrors).toEqual([]);

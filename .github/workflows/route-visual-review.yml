@@ -1,0 +1,166 @@
+name: Exhaustive route visual review
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: route-visual-review-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Check out pull-request head
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Check out workflow-dispatch ref
+        if: github.event_name != 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          npm ci --ignore-scripts
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Load main-branch route baseline
+        shell: bash
+        run: |
+          git fetch origin main --no-tags
+          mkdir -p /tmp/route-baseline
+          git show origin/main:miniprogram/data/sameFloorPaths.js > /tmp/route-baseline/sameFloorPaths.js
+          git show origin/main:miniprogram/data/floorNavPaths.js > /tmp/route-baseline/floorNavPaths.js
+
+      - name: Run focused regression tests
+        shell: bash
+        run: |
+          mkdir -p reports/route-visual-review
+          set -o pipefail
+          python -m pytest \
+            tests/python/test_safe_path_solver.py \
+            tests/python/test_route_visual_simplification.py \
+            tests/python/test_routing_surface.py \
+            -q 2>&1 | tee reports/route-visual-review/focused-tests.log
+
+      - name: Check that committed routes are already simplified
+        id: simplify
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          python scripts/simplify-existing-route-paths.py \
+            --floor-dir miniprogram/assets/floor-maps \
+            --report reports/route-visual-review/idempotence-summary.json \
+            --check \
+            2>&1 | tee reports/route-visual-review/idempotence.log
+
+      - name: Check that the committed web bundle is current
+        id: bundle
+        if: always()
+        continue-on-error: true
+        run: node scripts/build-web-bundle.js --check web-demo/navigation.bundle.js
+
+      - name: Export every route for visual review
+        id: visual_audit
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          python scripts/export-all-route-visual-audit.py \
+            --baseline-same-floor /tmp/route-baseline/sameFloorPaths.js \
+            --baseline-floor-nav /tmp/route-baseline/floorNavPaths.js \
+            --floor-dir miniprogram/assets/floor-maps \
+            --output-dir reports/route-visual-review \
+            2>&1 | tee reports/route-visual-review/export.log
+
+      - name: Run route-focused deterministic verification
+        id: verification
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            python -m pytest tests/python -q \
+              --ignore=tests/python/test_audit_read_only.py \
+              --basetemp=/tmp/route-pytest
+            find tests -maxdepth 1 -name '*.test.js' \
+              ! -name 'public-destinations.test.js' -print0 \
+              | xargs -0 node --test
+            npm run test:web
+            node scripts/check-routes.js
+            node scripts/check-syntax.js
+            npm run verify:candidate
+            git diff --exit-code -- \
+              miniprogram/data/sameFloorPaths.js \
+              miniprogram/data/floorNavPaths.js \
+              web-demo/navigation.bundle.js
+            git diff --check
+          } 2>&1 | tee reports/route-visual-review/verification.log
+
+      - name: Record isolated-repository limitations
+        if: always()
+        run: |
+          cat > reports/route-visual-review/known-test-limitations.md <<'EOF'
+          Two legacy checks require source material outside this repository:
+
+          1. `tests/public-destinations.test.js` invokes a migration script whose
+             input is hard-coded at `../院内导航_模拟导航整合版/.../routes.js`.
+          2. `tests/python/test_audit_read_only.py` invokes connectivity auditing
+             against the absent authoritative high-resolution floor-map directory.
+
+          The workflow excludes only those environment-bound checks. It still runs
+          all other Python tests, all other top-level Node tests, the browser SVG
+          rendering test, route endpoint and metric validation, syntax validation,
+          bundle freshness, and the complete candidate-release gate. Strict
+          patient-release authorization remains off.
+          EOF
+
+      - name: Upload every visual card and review sheet
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: exhaustive-route-visual-audit
+          path: reports/route-visual-review
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Enforce all route-audit gates
+        if: >-
+          always() &&
+          (steps.simplify.outcome == 'failure' ||
+           steps.bundle.outcome == 'failure' ||
+           steps.visual_audit.outcome == 'failure' ||
+           steps.verification.outcome == 'failure')
+        run: |
+          echo "simplify=${{ steps.simplify.outcome }}"
+          echo "bundle=${{ steps.bundle.outcome }}"
+          echo "visual_audit=${{ steps.visual_audit.outcome }}"
+          echo "verification=${{ steps.verification.outcome }}"
+          exit 1
