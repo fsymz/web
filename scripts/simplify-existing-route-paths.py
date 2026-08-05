@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """Safely merge redundant points in existing verified route geometries.
 
-The repository does not contain the original authoritative floor-map files used by
-full route generation. This post-processor therefore starts from the existing
-verified routes and only removes intermediate points when the packaged runtime
-map confirms that the replacement segment is walkable and has no lower packaged-
-map clearance than the original route geometry.
+The authoritative high-resolution source maps are not stored in this repository.
+This post-processor therefore keeps every route endpoint and every route field,
+uses the packaged map only after scaling spatial policy values to its dimensions,
+and applies a shortcut only when that shortcut is safe and does not reduce the
+route's minimum clearance on the scaled runtime-map audit surface. If the scaled
+surface cannot reproduce the existing route, only exactly collinear points are
+removed; that operation leaves the geometric locus unchanged.
 """
 
 from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -23,13 +26,20 @@ from PIL import Image
 from project_paths import load_json, project_root, sha256_file
 from route_provenance import current_route_provenance, render_commonjs_export
 from routing_surface import build_routing_surface, load_floor_policy
-from safe_path_solver import SolveContext, SolverDiagnostics, _quality
+from safe_path_solver import SolveContext, SolverDiagnostics
 
 
 ROUTE_FILES = (
     ("sameFloorPaths.js", "canonical same-floor routes"),
     ("floorNavPaths.js", "per-shaft elevator navigation paths"),
 )
+SPATIAL_PIXEL_FIELDS = (
+    "cellSizePx",
+    "clearancePx",
+    "hardBlackClosingRadiusPx",
+    "maxAnchorSnapPx",
+)
+AREA_PIXEL_FIELDS = ("hardBlackMinComponentAreaPx",)
 
 
 def strict_json(text: str) -> Any:
@@ -62,90 +72,60 @@ def load_commonjs(path: Path) -> dict[str, dict[str, Any]]:
     value = strict_json(body)
     if not isinstance(value, dict):
         raise TypeError(f"{path}: export must be an object")
+    if any(not isinstance(key, str) or not isinstance(item, dict) for key, item in value.items()):
+        raise TypeError(f"{path}: route keys must map to objects")
     return value
 
 
-def normalized_points(value: object, *, label: str) -> list[list[float]]:
+def normalized_points(value: object, *, label: str) -> list[list[float | int]]:
     if not isinstance(value, list) or not value:
         raise ValueError(f"{label}: points must be a non-empty array")
-    result: list[list[float]] = []
+    result: list[list[float | int]] = []
     for index, point in enumerate(value):
         if not isinstance(point, list) or len(point) != 2:
             raise ValueError(f"{label}: points[{index}] must contain two numbers")
-        pair = [float(point[0]), float(point[1])]
-        if any(not math.isfinite(number) or not 0 <= number <= 100 for number in pair):
-            raise ValueError(f"{label}: points[{index}] is outside 0..100")
-        if not result or result[-1] != pair:
+        pair: list[float | int] = []
+        for component in point:
+            if (
+                isinstance(component, bool)
+                or not isinstance(component, (int, float))
+                or not math.isfinite(float(component))
+                or not 0 <= float(component) <= 100
+            ):
+                raise ValueError(f"{label}: points[{index}] is outside 0..100")
+            pair.append(component)
+        if not result or pair != result[-1]:
             result.append(pair)
     return result
 
 
-def canonical_points(points: Sequence[Sequence[float]]) -> tuple[list[list[float]], bool]:
-    forward = json.dumps(points, ensure_ascii=False, separators=(",", ":"))
-    reversed_points = [list(point) for point in reversed(points)]
-    reverse = json.dumps(reversed_points, ensure_ascii=False, separators=(",", ":"))
+def canonical_points(
+    points: Sequence[Sequence[float | int]],
+) -> tuple[list[list[float | int]], bool]:
+    forward_points = [list(point) for point in points]
+    reverse_points = [list(point) for point in reversed(points)]
+    forward = json.dumps(forward_points, ensure_ascii=False, separators=(",", ":"))
+    reverse = json.dumps(reverse_points, ensure_ascii=False, separators=(",", ":"))
     if reverse < forward:
-        return reversed_points, True
-    return [list(point) for point in points], False
+        return reverse_points, True
+    return forward_points, False
 
 
-def percent_to_pixels(
-    points: Sequence[Sequence[float]],
-    width: int,
-    height: int,
-) -> list[tuple[int, int]]:
-    result: list[tuple[int, int]] = []
-    for point in points:
-        pixel = (
-            max(0, min(width - 1, round(float(point[0]) / 100 * (width - 1)))),
-            max(0, min(height - 1, round(float(point[1]) / 100 * (height - 1)))),
-        )
-        if not result or result[-1] != pixel:
-            result.append(pixel)
-    return result
+def canonical_geometry_hash(points: Sequence[Sequence[float | int]]) -> str:
+    forward = json.dumps(points, ensure_ascii=False, separators=(",", ":"))
+    reverse = json.dumps(list(reversed(points)), ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(min(forward, reverse).encode("utf-8")).hexdigest()
 
 
-def route_clearance(context: SolveContext, pixels: Sequence[tuple[int, int]]) -> float:
-    return min(
-        context.segment_clearance(left, right)
-        for left, right in zip(pixels, pixels[1:])
-    )
-
-
-def edges_are_safe(context: SolveContext, pixels: Sequence[tuple[int, int]]) -> bool:
-    return all(
-        context.segment_is_safe(left, right)
-        for left, right in zip(pixels, pixels[1:])
-    )
-
-
-def simplify_pixels(
-    context: SolveContext,
-    pixels: Sequence[tuple[int, int]],
-    *,
-    minimum_clearance_px: float,
-) -> list[tuple[int, int]]:
-    if len(pixels) <= 2:
-        return list(pixels)
-    result = [pixels[0]]
-    current = 0
-    goal = len(pixels) - 1
-    epsilon = 1e-6
-    while current < goal:
-        selected = current + 1
-        for candidate in range(goal, current, -1):
-            if not context.segment_is_safe(pixels[current], pixels[candidate]):
-                continue
-            if (
-                context.segment_clearance(pixels[current], pixels[candidate]) + epsilon
-                < minimum_clearance_px
-            ):
-                continue
-            selected = candidate
-            break
-        result.append(pixels[selected])
-        current = selected
-    return result
+def image_size(record: dict[str, Any], *, label: str) -> tuple[int, int]:
+    value = record.get("imageSize")
+    if (
+        not isinstance(value, list)
+        or len(value) != 2
+        or any(isinstance(item, bool) or not isinstance(item, int) or item <= 1 for item in value)
+    ):
+        raise ValueError(f"{label}: imageSize must contain two integers above one")
+    return int(value[0]), int(value[1])
 
 
 def floor_map_path(floor_dir: Path, record: dict[str, Any]) -> Path:
@@ -162,52 +142,276 @@ def floor_map_path(floor_dir: Path, record: dict[str, Any]) -> Path:
     raise FileNotFoundError(f"missing packaged map for {record.get('floor')!r}")
 
 
-def build_surface_for_packaged_map(
+def points_to_float_pixels(
+    points: Sequence[Sequence[float | int]],
+    size: tuple[int, int],
+) -> list[tuple[float, float]]:
+    width, height = size
+    return [
+        (
+            float(point[0]) / 100 * (width - 1),
+            float(point[1]) / 100 * (height - 1),
+        )
+        for point in points
+    ]
+
+
+def points_to_rounded_pixels(
+    points: Sequence[Sequence[float | int]],
+    size: tuple[int, int],
+) -> list[tuple[int, int]]:
+    width, height = size
+    return [
+        (
+            max(0, min(width - 1, round(float(point[0]) / 100 * (width - 1)))),
+            max(0, min(height - 1, round(float(point[1]) / 100 * (height - 1)))),
+        )
+        for point in points
+    ]
+
+
+def route_metrics(
+    points: Sequence[Sequence[float | int]],
+    size: tuple[int, int],
+    *,
+    turn_angle_degrees: float,
+) -> dict[str, Any]:
+    if len(points) < 2:
+        return {
+            "routeLength": 0.0,
+            "effectiveTurnCount": 0,
+            "shortestSegment": 0.0,
+            "semanticPointIndexes": [0] if points else [],
+            "geometrySha256": canonical_geometry_hash(points),
+        }
+    width, height = size
+    aspect = height / width
+    scaled = [(float(point[0]), float(point[1]) * aspect) for point in points]
+    lengths = [
+        math.hypot(right[0] - left[0], right[1] - left[1])
+        for left, right in zip(scaled, scaled[1:])
+    ]
+    turn_indexes: list[int] = []
+    for index, (left, middle, right) in enumerate(zip(scaled, scaled[1:], scaled[2:]), start=1):
+        ax, ay = middle[0] - left[0], middle[1] - left[1]
+        bx, by = right[0] - middle[0], right[1] - middle[1]
+        if (ax == 0 and ay == 0) or (bx == 0 and by == 0):
+            continue
+        angle = math.degrees(math.atan2(abs(ax * by - ay * bx), ax * bx + ay * by))
+        if angle >= turn_angle_degrees:
+            turn_indexes.append(index)
+    return {
+        "routeLength": round(sum(lengths), 6),
+        "effectiveTurnCount": len(turn_indexes),
+        "shortestSegment": round(min(lengths), 6),
+        "semanticPointIndexes": [0, *turn_indexes, len(points) - 1],
+        "geometrySha256": canonical_geometry_hash(points),
+    }
+
+
+def point_to_segment_distance(
+    point: tuple[float, float],
+    left: tuple[float, float],
+    right: tuple[float, float],
+) -> tuple[float, float]:
+    dx, dy = right[0] - left[0], right[1] - left[1]
+    denominator = dx * dx + dy * dy
+    if denominator == 0:
+        return math.hypot(point[0] - left[0], point[1] - left[1]), 0.0
+    projection = ((point[0] - left[0]) * dx + (point[1] - left[1]) * dy) / denominator
+    closest = (left[0] + projection * dx, left[1] + projection * dy)
+    return math.hypot(point[0] - closest[0], point[1] - closest[1]), projection
+
+
+def same_geometric_locus(
+    pixels: Sequence[tuple[float, float]],
+    start: int,
+    end: int,
+    *,
+    tolerance_px: float = 1e-7,
+) -> bool:
+    left, right = pixels[start], pixels[end]
+    if left == right:
+        return False
+    previous_projection = -float("inf")
+    for point in pixels[start : end + 1]:
+        distance, projection = point_to_segment_distance(point, left, right)
+        if distance > tolerance_px:
+            return False
+        if projection < -tolerance_px or projection > 1 + tolerance_px:
+            return False
+        if projection + tolerance_px < previous_projection:
+            return False
+        previous_projection = projection
+    return True
+
+
+def collapse_collinear_indices(
+    points: Sequence[Sequence[float | int]],
+    size: tuple[int, int],
+) -> list[int]:
+    if len(points) <= 2:
+        return list(range(len(points)))
+    pixels = points_to_float_pixels(points, size)
+    indexes = [0]
+    current = 0
+    goal = len(points) - 1
+    while current < goal:
+        selected = current + 1
+        for candidate in range(goal, current, -1):
+            if same_geometric_locus(pixels, current, candidate):
+                selected = candidate
+                break
+        indexes.append(selected)
+        current = selected
+    return indexes
+
+
+def policy_value(document: dict[str, Any], floor: str, key: str) -> int:
+    defaults = document.get("defaults")
+    floors = document.get("floors")
+    raw = floors.get(floor) if isinstance(floors, dict) else None
+    if not isinstance(defaults, dict) or not isinstance(raw, dict):
+        raise ValueError(f"missing routing policy for {floor}")
+    value = raw[key] if key in raw else defaults.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"routing policy {floor}.{key} must be an integer")
+    return value
+
+
+def scaled_policy_document(
+    document: dict[str, Any],
+    floor: str,
+    *,
+    source_size: tuple[int, int],
+    packaged_size: tuple[int, int],
+    packaged_hash: str,
+) -> dict[str, Any]:
+    scaled = copy.deepcopy(document)
+    floors = scaled.get("floors")
+    raw = floors.get(floor) if isinstance(floors, dict) else None
+    if not isinstance(raw, dict):
+        raise ValueError(f"missing routing policy for {floor}")
+    source_width, source_height = source_size
+    packaged_width, packaged_height = packaged_size
+    scale_x = (packaged_width - 1) / (source_width - 1)
+    scale_y = (packaged_height - 1) / (source_height - 1)
+    spatial_scale = min(scale_x, scale_y)
+    area_scale = scale_x * scale_y
+    raw["sourceFloorMapSha256"] = packaged_hash
+    for key in SPATIAL_PIXEL_FIELDS:
+        original = policy_value(document, floor, key)
+        minimum = 0 if key == "hardBlackClosingRadiusPx" else 1
+        raw[key] = max(minimum, round(original * spatial_scale))
+    for key in AREA_PIXEL_FIELDS:
+        original = policy_value(document, floor, key)
+        raw[key] = max(1, round(original * area_scale))
+    return scaled
+
+
+def build_scaled_surface(
     routing_document: dict[str, Any],
     floor: str,
     map_path: Path,
+    source_size: tuple[int, int],
 ) -> tuple[np.ndarray, Any]:
     with Image.open(map_path) as source:
         image = np.asarray(source.convert("RGB"))
-    audit_document = copy.deepcopy(routing_document)
-    floors = audit_document.get("floors")
-    if not isinstance(floors, dict) or not isinstance(floors.get(floor), dict):
-        raise ValueError(f"missing routing policy for {floor}")
-    actual_hash = sha256_file(map_path)
-    floors[floor]["sourceFloorMapSha256"] = actual_hash
-    policy = load_floor_policy(audit_document, floor, actual_hash)
+    packaged_size = (int(image.shape[1]), int(image.shape[0]))
+    packaged_hash = sha256_file(map_path)
+    policy_document = scaled_policy_document(
+        routing_document,
+        floor,
+        source_size=source_size,
+        packaged_size=packaged_size,
+        packaged_hash=packaged_hash,
+    )
+    policy = load_floor_policy(policy_document, floor, packaged_hash)
     return image, build_routing_surface(image, policy)
+
+
+def edges_are_safe(context: SolveContext, pixels: Sequence[tuple[int, int]]) -> bool:
+    return len(pixels) >= 2 and all(
+        left != right and context.segment_is_safe(left, right)
+        for left, right in zip(pixels, pixels[1:])
+    )
+
+
+def route_clearance(context: SolveContext, pixels: Sequence[tuple[int, int]]) -> float:
+    return min(
+        context.segment_clearance(left, right)
+        for left, right in zip(pixels, pixels[1:])
+    )
+
+
+def simplify_on_scaled_surface(
+    points: Sequence[Sequence[float | int]],
+    *,
+    source_size: tuple[int, int],
+    packaged_size: tuple[int, int],
+    context: SolveContext,
+) -> tuple[list[int], dict[str, Any]]:
+    base_indices = collapse_collinear_indices(points, source_size)
+    base_points = [points[index] for index in base_indices]
+    packaged_pixels = points_to_rounded_pixels(base_points, packaged_size)
+    audit = {
+        "runtimeMapReproduced": False,
+        "baselineRuntimeClearancePx": None,
+        "candidateRuntimeClearancePx": None,
+        "mode": "collinear-only",
+    }
+    if not edges_are_safe(context, packaged_pixels):
+        return base_indices, audit
+
+    baseline_clearance = route_clearance(context, packaged_pixels)
+    audit["runtimeMapReproduced"] = True
+    audit["baselineRuntimeClearancePx"] = round(baseline_clearance, 6)
+    selected_positions = [0]
+    current = 0
+    goal = len(base_points) - 1
+    while current < goal:
+        selected = current + 1
+        for candidate in range(goal, current, -1):
+            left, right = packaged_pixels[current], packaged_pixels[candidate]
+            if left == right or not context.segment_is_safe(left, right):
+                continue
+            if context.segment_clearance(left, right) + 1e-6 < baseline_clearance:
+                continue
+            selected = candidate
+            break
+        selected_positions.append(selected)
+        current = selected
+
+    candidate_indices = [base_indices[position] for position in selected_positions]
+    candidate_points = [points[index] for index in candidate_indices]
+    candidate_pixels = points_to_rounded_pixels(candidate_points, packaged_size)
+    if not edges_are_safe(context, candidate_pixels):
+        return base_indices, audit
+    candidate_clearance = route_clearance(context, candidate_pixels)
+    if candidate_clearance + 1e-6 < baseline_clearance:
+        return base_indices, audit
+    audit["candidateRuntimeClearancePx"] = round(candidate_clearance, 6)
+    audit["mode"] = "scaled-runtime-map-clearance-preserving"
+    return candidate_indices, audit
 
 
 def update_record(
     record: dict[str, Any],
+    points: Sequence[Sequence[float | int]],
     *,
-    surface: Any,
-    pixels: Sequence[tuple[int, int]],
     turn_angle_degrees: float,
 ) -> dict[str, Any]:
-    percentages, lengths, turns, packaged_clearance, semantic_indexes, geometry_hash = _quality(
-        surface,
-        pixels,
+    updated = dict(record)
+    copied_points = [list(point) for point in points]
+    metrics = route_metrics(
+        copied_points,
+        image_size(record, label=str(record.get("floor") or "route")),
         turn_angle_degrees=turn_angle_degrees,
     )
-    previous_clearance = float(record.get("minClearancePx") or packaged_clearance)
-    conservative_clearance = min(previous_clearance, packaged_clearance)
-    updated = dict(record)
-    updated["geometrySha256"] = geometry_hash
-    updated["solverQualityStatus"] = "optimized"
-    updated["points"] = [list(point) for point in percentages]
-    updated["routeLength"] = round(sum(lengths), 6)
-    updated["minClearancePx"] = round(conservative_clearance, 3)
-    image_size = updated.get("imageSize")
-    if isinstance(image_size, list) and len(image_size) == 2 and float(image_size[0]) > 0:
-        updated["minClearanceImageWidthPercent"] = round(
-            conservative_clearance / float(image_size[0]) * 100,
-            6,
-        )
-    updated["effectiveTurnCount"] = turns
-    updated["shortestSegment"] = round(min(lengths), 6)
-    updated["semanticPointIndexes"] = list(semantic_indexes)
+    updated["points"] = copied_points
+    updated.update(metrics)
+    if copied_points != record.get("points"):
+        updated["solverQualityStatus"] = "optimized"
     return updated
 
 
@@ -218,148 +422,166 @@ def simplify_route_file(
     floor_dir: Path,
     turn_angle_degrees: float,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
-    grouped: dict[tuple[str, str, str], list[tuple[str, dict[str, Any], bool]]] = {}
+    grouped: dict[
+        tuple[str, str, tuple[int, int], str],
+        list[tuple[str, dict[str, Any], bool]],
+    ] = {}
     for key, record in records.items():
         points = normalized_points(record.get("points"), label=key)
         canonical, reversed_from_record = canonical_points(points)
+        size = image_size(record, label=key)
         signature = json.dumps(canonical, ensure_ascii=False, separators=(",", ":"))
         group_key = (
             str(record.get("floor") or ""),
             str(record.get("image") or ""),
+            size,
             signature,
         )
         grouped.setdefault(group_key, []).append((key, record, reversed_from_record))
 
     output: dict[str, dict[str, Any]] = {}
-    surface_cache: dict[tuple[str, Path], tuple[np.ndarray, Any]] = {}
-    summary = {
+    surface_cache: dict[tuple[str, Path, tuple[int, int]], tuple[np.ndarray, Any]] = {}
+    summary: dict[str, Any] = {
         "routeCount": len(records),
         "uniqueGeometryCount": len(grouped),
         "changedRouteCount": 0,
         "changedUniqueGeometryCount": 0,
+        "runtimeMapReproducedGeometryCount": 0,
+        "runtimeMapInconclusiveGeometryCount": 0,
+        "scaledMapSimplifiedGeometryCount": 0,
+        "collinearOnlySimplifiedGeometryCount": 0,
         "pointsBefore": 0,
         "pointsAfter": 0,
         "turnsBefore": 0,
         "turnsAfter": 0,
-        "unsafeOriginalGeometryCount": 0,
-        "serializedSafetyFailureCount": 0,
-        "clearanceRegressionCount": 0,
+        "endpointRegressionCount": 0,
         "lengthRegressionCount": 0,
         "turnRegressionCount": 0,
+        "runtimeClearanceRegressionCount": 0,
+        "rejectedRegressionGeometryCount": 0,
+        "geometryAudits": [],
         "failures": [],
     }
 
-    for (floor, _image, signature), members in sorted(grouped.items()):
+    for (floor, _image_name, source_size, signature), members in sorted(grouped.items()):
         canonical = strict_json(signature)
         representative = members[0][1]
         if len(canonical) < 2 or representative.get("coLocated") is True:
-            for key, record, _reversed in members:
-                output[key] = dict(record)
-                summary["pointsBefore"] += len(normalized_points(record.get("points"), label=key))
-                summary["pointsAfter"] += len(normalized_points(record.get("points"), label=key))
-            continue
-
-        map_path = floor_map_path(floor_dir, representative).resolve()
-        cache_key = (floor, map_path)
-        if cache_key not in surface_cache:
-            surface_cache[cache_key] = build_surface_for_packaged_map(
-                routing_document,
-                floor,
-                map_path,
-            )
-        image, surface = surface_cache[cache_key]
-        height, width = image.shape[:2]
-        original_pixels = percent_to_pixels(canonical, width, height)
-        context = SolveContext(surface, SolverDiagnostics())
-        original_quality = _quality(
-            surface,
-            original_pixels,
-            turn_angle_degrees=turn_angle_degrees,
-        )
-        original_length = sum(original_quality[1])
-        original_turns = original_quality[2]
-        summary["turnsBefore"] += original_turns * len(members)
-
-        if not edges_are_safe(context, original_pixels):
-            summary["unsafeOriginalGeometryCount"] += 1
-            summary["failures"].append(
-                f"{floor}:{members[0][0]} original geometry is unsafe on packaged map"
-            )
-            simplified_pixels = list(original_pixels)
+            candidate = [list(point) for point in canonical]
+            audit = {
+                "mode": "co-located",
+                "runtimeMapReproduced": False,
+                "baselineRuntimeClearancePx": None,
+                "candidateRuntimeClearancePx": None,
+            }
         else:
-            original_clearance = route_clearance(context, original_pixels)
-            simplified_pixels = simplify_pixels(
-                context,
-                original_pixels,
-                minimum_clearance_px=original_clearance,
+            map_path = floor_map_path(floor_dir, representative).resolve()
+            cache_key = (floor, map_path, source_size)
+            if cache_key not in surface_cache:
+                surface_cache[cache_key] = build_scaled_surface(
+                    routing_document,
+                    floor,
+                    map_path,
+                    source_size,
+                )
+            image, surface = surface_cache[cache_key]
+            packaged_size = (int(image.shape[1]), int(image.shape[0]))
+            context = SolveContext(surface, SolverDiagnostics())
+            candidate_indexes, audit = simplify_on_scaled_surface(
+                canonical,
+                source_size=source_size,
+                packaged_size=packaged_size,
+                context=context,
             )
-            simplified_quality = _quality(
-                surface,
-                simplified_pixels,
-                turn_angle_degrees=turn_angle_degrees,
-            )
-            simplified_length = sum(simplified_quality[1])
-            simplified_turns = simplified_quality[2]
-            simplified_clearance = simplified_quality[3]
-            if simplified_length > original_length + 1e-6:
-                summary["lengthRegressionCount"] += 1
-                summary["failures"].append(f"{floor}:{members[0][0]} length increased")
-                simplified_pixels = list(original_pixels)
-            elif simplified_turns > original_turns:
-                summary["turnRegressionCount"] += 1
-                summary["failures"].append(f"{floor}:{members[0][0]} turns increased")
-                simplified_pixels = list(original_pixels)
-            elif simplified_clearance + 1e-6 < original_clearance:
-                summary["clearanceRegressionCount"] += 1
-                summary["failures"].append(f"{floor}:{members[0][0]} clearance decreased")
-                simplified_pixels = list(original_pixels)
+            candidate = [list(canonical[index]) for index in candidate_indexes]
+            if audit["runtimeMapReproduced"]:
+                summary["runtimeMapReproducedGeometryCount"] += 1
+            else:
+                summary["runtimeMapInconclusiveGeometryCount"] += 1
+            if len(candidate) < len(canonical):
+                if audit["mode"] == "scaled-runtime-map-clearance-preserving":
+                    summary["scaledMapSimplifiedGeometryCount"] += 1
+                else:
+                    summary["collinearOnlySimplifiedGeometryCount"] += 1
 
-        simplified_quality = _quality(
-            surface,
-            simplified_pixels,
+        before_metrics = route_metrics(
+            canonical,
+            source_size,
             turn_angle_degrees=turn_angle_degrees,
         )
-        serialized_pixels = percent_to_pixels(simplified_quality[0], width, height)
-        if not edges_are_safe(SolveContext(surface, SolverDiagnostics()), serialized_pixels):
-            summary["serializedSafetyFailureCount"] += 1
-            summary["failures"].append(
-                f"{floor}:{members[0][0]} serialized simplified geometry is unsafe"
-            )
-            simplified_pixels = list(original_pixels)
-
-        canonical_updated = update_record(
-            representative,
-            surface=surface,
-            pixels=simplified_pixels,
+        after_metrics = route_metrics(
+            candidate,
+            source_size,
             turn_angle_degrees=turn_angle_degrees,
         )
-        canonical_updated_points = canonical_updated["points"]
-        changed_geometry = canonical_updated_points != canonical
+        rejection_reasons: list[str] = []
+        if candidate[0] != canonical[0] or candidate[-1] != canonical[-1]:
+            summary["endpointRegressionCount"] += 1
+            rejection_reasons.append("endpoint")
+        if after_metrics["routeLength"] > before_metrics["routeLength"] + 0.00001:
+            summary["lengthRegressionCount"] += 1
+            rejection_reasons.append("length")
+        if after_metrics["effectiveTurnCount"] > before_metrics["effectiveTurnCount"]:
+            summary["turnRegressionCount"] += 1
+            rejection_reasons.append("turn-count")
+        if (
+            audit.get("runtimeMapReproduced")
+            and audit.get("candidateRuntimeClearancePx") is not None
+            and audit.get("baselineRuntimeClearancePx") is not None
+            and float(audit["candidateRuntimeClearancePx"]) + 1e-6
+            < float(audit["baselineRuntimeClearancePx"])
+        ):
+            summary["runtimeClearanceRegressionCount"] += 1
+            rejection_reasons.append("runtime-clearance")
+        if rejection_reasons:
+            summary["rejectedRegressionGeometryCount"] += 1
+            candidate = [list(point) for point in canonical]
+            after_metrics = before_metrics
+            audit["mode"] = "rejected-" + "-".join(rejection_reasons)
+            audit["candidateRuntimeClearancePx"] = audit.get("baselineRuntimeClearancePx")
+
+        changed_geometry = candidate != canonical
         if changed_geometry:
             summary["changedUniqueGeometryCount"] += 1
 
+        summary["geometryAudits"].append(
+            {
+                "floor": floor,
+                "representativeKey": members[0][0],
+                "routeCount": len(members),
+                "pointsBefore": len(canonical),
+                "pointsAfter": len(candidate),
+                "turnsBefore": before_metrics["effectiveTurnCount"],
+                "turnsAfter": after_metrics["effectiveTurnCount"],
+                **audit,
+            }
+        )
+
         for key, record, reversed_from_record in members:
             points_before = normalized_points(record.get("points"), label=key)
-            updated = dict(canonical_updated)
-            if reversed_from_record:
-                updated["points"] = [list(point) for point in reversed(canonical_updated_points)]
-                indexes = canonical_updated["semanticPointIndexes"]
-                updated["semanticPointIndexes"] = [
-                    len(canonical_updated_points) - 1 - index
-                    for index in reversed(indexes)
-                ]
-            else:
-                updated["points"] = [list(point) for point in canonical_updated_points]
-                updated["semanticPointIndexes"] = list(canonical_updated["semanticPointIndexes"])
+            oriented = [list(point) for point in (reversed(candidate) if reversed_from_record else candidate)]
+            updated = update_record(
+                record,
+                oriented,
+                turn_angle_degrees=turn_angle_degrees,
+            )
             output[key] = updated
+            before_oriented_metrics = route_metrics(
+                points_before,
+                image_size(record, label=key),
+                turn_angle_degrees=turn_angle_degrees,
+            )
             summary["pointsBefore"] += len(points_before)
-            summary["pointsAfter"] += len(updated["points"])
+            summary["pointsAfter"] += len(oriented)
+            summary["turnsBefore"] += before_oriented_metrics["effectiveTurnCount"]
             summary["turnsAfter"] += int(updated.get("effectiveTurnCount") or 0)
-            if updated["points"] != points_before:
+            if oriented != points_before:
                 summary["changedRouteCount"] += 1
 
     summary["pointsRemoved"] = summary["pointsBefore"] - summary["pointsAfter"]
     summary["turnsRemoved"] = summary["turnsBefore"] - summary["turnsAfter"]
+    if summary["changedRouteCount"] and summary["pointsRemoved"] <= 0:
+        summary["failures"].append("route geometry changed without removing points")
     summary["failures"] = sorted(set(summary["failures"]))
     return output, summary
 
@@ -392,8 +614,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     turn_angle_degrees = float(navigation_document.get("turnAngleDegrees", 25))
     provenance = current_route_provenance(root)
     combined_summary: dict[str, Any] = {
-        "schemaVersion": 1,
-        "mode": "existing-route-packaged-map-safe-merge",
+        "schemaVersion": 2,
+        "mode": "existing-route-scaled-runtime-map-clearance-preserving-merge",
         "routeFiles": {},
         "failures": [],
     }
@@ -422,8 +644,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     combined_summary["failures"] = sorted(set(combined_summary["failures"]))
     if args.report is not None:
-        args.report.resolve().parent.mkdir(parents=True, exist_ok=True)
-        args.report.resolve().write_text(
+        report_path = args.report.resolve()
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(
             json.dumps(combined_summary, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
             encoding="utf-8",
         )
