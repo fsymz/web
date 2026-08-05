@@ -1,48 +1,614 @@
-name: Route visual review
+name: Apply and audit route simplification
 
 on:
   push:
     branches: [agent/route-visual-audit]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  regression:
-    if: github.event_name != 'push' || github.actor != 'github-actions[bot]'
+  apply-and-audit:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: pip
-      - name: Install Python dependencies
-        run: python -m pip install -r requirements.txt
-      - name: Run route simplification regression
-        id: regression
-        continue-on-error: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          npm ci --ignore-scripts
+
+      - name: Preserve baseline route data
+        run: |
+          mkdir -p /tmp/route-baseline
+          cp miniprogram/data/sameFloorPaths.js /tmp/route-baseline/sameFloorPaths.js
+          cp miniprogram/data/floorNavPaths.js /tmp/route-baseline/floorNavPaths.js
+
+      - name: Apply deterministic route simplification fix
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          solver_path = Path('scripts/safe_path_solver.py')
+          text = solver_path.read_text(encoding='utf-8')
+
+          old_forward = (
+              "            tied_better_path = (\n"
+              "                candidate_distance == distances[edge.target]\n"
+              "                and (known_path is None or candidate_path < known_path)\n"
+              "            )\n"
+          )
+          new_forward = (
+              "            tied_better_path = (\n"
+              "                candidate_distance == distances[edge.target]\n"
+              "                and (\n"
+              "                    known_path is None\n"
+              "                    or len(candidate_path) < len(known_path)\n"
+              "                    or (\n"
+              "                        len(candidate_path) == len(known_path)\n"
+              "                        and candidate_path < known_path\n"
+              "                    )\n"
+              "                )\n"
+              "            )\n"
+          )
+          old_label = '''def _label_is_better(candidate: TurnLabel, existing: TurnLabel) -> bool:
+              if candidate.distance != existing.distance:
+                  return candidate.distance < existing.distance
+              if candidate.min_clearance_px != existing.min_clearance_px:
+                  return candidate.min_clearance_px > existing.min_clearance_px
+              return candidate.path < existing.path
+          '''
+          new_label = '''def _label_is_better(candidate: TurnLabel, existing: TurnLabel) -> bool:
+              if candidate.distance != existing.distance:
+                  return candidate.distance < existing.distance
+              if candidate.min_clearance_px != existing.min_clearance_px:
+                  return candidate.min_clearance_px > existing.min_clearance_px
+              if len(candidate.path) != len(existing.path):
+                  return len(candidate.path) < len(existing.path)
+              return candidate.path < existing.path
+          '''
+
+          if old_forward in text:
+              text = text.replace(old_forward, new_forward, 1)
+          elif new_forward not in text:
+              raise SystemExit('could not locate _forward_shortest_path tie-break block')
+
+          if old_label in text:
+              text = text.replace(old_label, new_label, 1)
+          elif new_label not in text:
+              raise SystemExit('could not locate _label_is_better block')
+
+          solver_path.write_text(text, encoding='utf-8', newline='\n')
+
+          policy_path = Path('config/routing-policy.json')
+          policy = policy_path.read_text(encoding='utf-8')
+          if 'grid-a-star-visible-local-v1' in policy:
+              policy = policy.replace(
+                  'grid-a-star-visible-local-v1',
+                  'grid-a-star-visible-local-v2',
+                  1,
+              )
+          elif 'grid-a-star-visible-local-v2' not in policy:
+              raise SystemExit('unexpected routing algorithm version')
+          policy_path.write_text(policy, encoding='utf-8', newline='\n')
+
+          test_path = Path('tests/python/test_safe_path_solver.py')
+          tests = test_path.read_text(encoding='utf-8')
+          old_test = '''def test_equal_distance_dag_paths_choose_lexicographically_smallest_indexes():
+              safe = surface(np.ones((3, 7), dtype=bool))
+              seed = [(0, 1), (2, 1), (4, 1), (6, 1)]
+              dag = build_local_candidate_dag(
+                  SolveContext(safe, SolverDiagnostics()),
+                  seed,
+                  seed,
+                  candidate_limit=96,
+                  seed_index_radius=1,
+              )
+              assert dag is not None
+              assert dag.shortest_distance == pytest.approx(6.0, abs=1e-9)
+              assert dag.shortest_path == (0, 1, 2, 3)
+          '''
+          new_test = '''def test_equal_distance_dag_paths_choose_fewest_segments_before_indexes():
+              safe = surface(np.ones((3, 7), dtype=bool))
+              seed = [(0, 1), (2, 1), (4, 1), (6, 1)]
+              dag = build_local_candidate_dag(
+                  SolveContext(safe, SolverDiagnostics()),
+                  seed,
+                  seed,
+                  candidate_limit=96,
+                  seed_index_radius=1,
+              )
+              assert dag is not None
+              assert dag.shortest_distance == pytest.approx(6.0, abs=1e-9)
+              assert dag.shortest_path == (0, 3)
+          '''
+          if old_test in tests:
+              tests = tests.replace(old_test, new_test, 1)
+          elif new_test not in tests:
+              raise SystemExit('could not locate equal-distance DAG regression test')
+          test_path.write_text(tests, encoding='utf-8', newline='\n')
+          PY
+
+      - name: Run focused red-green regression suite
         shell: bash
         run: |
           mkdir -p reports/route-visual-review
           set -o pipefail
-          python -m pytest tests/python/test_route_visual_simplification.py -q 2>&1 | tee reports/route-visual-review/regression.log
-      - name: Record push-run evidence
-        if: always() && github.event_name == 'push'
+          python -m pytest \
+            tests/python/test_safe_path_solver.py \
+            tests/python/test_route_visual_simplification.py \
+            -q 2>&1 | tee reports/route-visual-review/focused-tests.log
+
+      - name: Regenerate canonical routes and web bundle
         shell: bash
         run: |
-          printf '%s\n' '${{ steps.regression.outcome }}' > reports/route-visual-review/regression-outcome.txt
+          set -o pipefail
+          {
+            python scripts/generate-floor-nav-paths.py --floor-dir miniprogram/assets/floor-maps
+            python scripts/generate-same-floor-paths.py --floor-dir miniprogram/assets/floor-maps
+            node scripts/build-web-bundle.js --output web-demo/navigation.bundle.js
+          } 2>&1 | tee reports/route-visual-review/generation.log
+
+      - name: Build quantitative and visual before-after audit
+        shell: bash
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+
+          import csv
+          import json
+          import math
+          from pathlib import Path
+
+          from PIL import Image, ImageDraw, ImageFont
+
+          report_dir = Path('reports/route-visual-review')
+          card_dir = report_dir / 'comparison-cards'
+          sheet_dir = report_dir / 'comparison-sheets'
+          card_dir.mkdir(parents=True, exist_ok=True)
+          sheet_dir.mkdir(parents=True, exist_ok=True)
+
+          def load_commonjs(path: Path) -> dict[str, dict]:
+              text = path.read_text(encoding='utf-8-sig').strip()
+              marker = 'module.exports ='
+              if marker not in text:
+                  raise ValueError(f'missing CommonJS export: {path}')
+              body = text.split(marker, 1)[1].strip()
+              if body.endswith(';'):
+                  body = body[:-1].rstrip()
+              value = json.loads(body)
+              if not isinstance(value, dict):
+                  raise TypeError(f'route export is not an object: {path}')
+              return value
+
+          def safe_float(value: object, default: float = 0.0) -> float:
+              try:
+                  number = float(value)
+              except (TypeError, ValueError):
+                  return default
+              return number if math.isfinite(number) else default
+
+          def floor_number(value: object) -> int:
+              digits = ''.join(ch for ch in str(value) if ch.isdigit())
+              return int(digits) if digits else 999
+
+          def route_pair_key(key: str) -> tuple[str, str]:
+              parts = key.split('|||', 1)
+              return tuple(sorted(parts)) if len(parts) == 2 else (key, key)
+
+          sources = (
+              (
+                  'sameFloor',
+                  Path('/tmp/route-baseline/sameFloorPaths.js'),
+                  Path('miniprogram/data/sameFloorPaths.js'),
+              ),
+              (
+                  'floorNav',
+                  Path('/tmp/route-baseline/floorNavPaths.js'),
+                  Path('miniprogram/data/floorNavPaths.js'),
+              ),
+          )
+
+          rows: list[dict[str, object]] = []
+          totals = {
+              'routeCount': 0,
+              'changedRouteCount': 0,
+              'canonicalChangedRouteCount': 0,
+              'reducedPointRouteCount': 0,
+              'pointIncreaseRouteCount': 0,
+              'turnReductionRouteCount': 0,
+              'turnIncreaseRouteCount': 0,
+              'lengthIncreaseRouteCount': 0,
+              'clearanceDecreaseRouteCount': 0,
+              'totalPointsBefore': 0,
+              'totalPointsAfter': 0,
+              'totalTurnsBefore': 0,
+              'totalTurnsAfter': 0,
+              'maxPointsBefore': 0,
+              'maxPointsAfter': 0,
+              'maxTurnsBefore': 0,
+              'maxTurnsAfter': 0,
+          }
+
+          seen_canonical: set[tuple[object, ...]] = set()
+          canonical_rows: list[dict[str, object]] = []
+          for kind, before_path, after_path in sources:
+              before = load_commonjs(before_path)
+              after = load_commonjs(after_path)
+              if set(before) != set(after):
+                  missing = sorted(set(before) - set(after))
+                  extra = sorted(set(after) - set(before))
+                  raise SystemExit(f'{kind} key drift: missing={missing} extra={extra}')
+
+              for key in sorted(before):
+                  left = before[key]
+                  right = after[key]
+                  before_points = len(left.get('points') or [])
+                  after_points = len(right.get('points') or [])
+                  before_turns = int(left.get('effectiveTurnCount') or 0)
+                  after_turns = int(right.get('effectiveTurnCount') or 0)
+                  before_length = safe_float(left.get('routeLength'))
+                  after_length = safe_float(right.get('routeLength'))
+                  before_clearance = safe_float(left.get('minClearancePx'))
+                  after_clearance = safe_float(right.get('minClearancePx'))
+                  changed = left.get('points') != right.get('points')
+
+                  totals['routeCount'] += 1
+                  totals['changedRouteCount'] += int(changed)
+                  totals['reducedPointRouteCount'] += int(after_points < before_points)
+                  totals['pointIncreaseRouteCount'] += int(after_points > before_points)
+                  totals['turnReductionRouteCount'] += int(after_turns < before_turns)
+                  totals['turnIncreaseRouteCount'] += int(after_turns > before_turns)
+                  totals['lengthIncreaseRouteCount'] += int(after_length > before_length + 1e-6)
+                  totals['clearanceDecreaseRouteCount'] += int(
+                      before_clearance > 0 and after_clearance + 1e-3 < before_clearance
+                  )
+                  totals['totalPointsBefore'] += before_points
+                  totals['totalPointsAfter'] += after_points
+                  totals['totalTurnsBefore'] += before_turns
+                  totals['totalTurnsAfter'] += after_turns
+                  totals['maxPointsBefore'] = max(totals['maxPointsBefore'], before_points)
+                  totals['maxPointsAfter'] = max(totals['maxPointsAfter'], after_points)
+                  totals['maxTurnsBefore'] = max(totals['maxTurnsBefore'], before_turns)
+                  totals['maxTurnsAfter'] = max(totals['maxTurnsAfter'], after_turns)
+
+                  if not changed:
+                      continue
+                  row = {
+                      'kind': kind,
+                      'key': key,
+                      'floor': right.get('floor', ''),
+                      'pointsBefore': before_points,
+                      'pointsAfter': after_points,
+                      'pointsRemoved': before_points - after_points,
+                      'turnsBefore': before_turns,
+                      'turnsAfter': after_turns,
+                      'turnsRemoved': before_turns - after_turns,
+                      'routeLengthBefore': before_length,
+                      'routeLengthAfter': after_length,
+                      'clearanceBefore': before_clearance,
+                      'clearanceAfter': after_clearance,
+                      'geometryBefore': left.get('geometrySha256', ''),
+                      'geometryAfter': right.get('geometrySha256', ''),
+                      'beforePoints': left.get('points') or [],
+                      'afterPoints': right.get('points') or [],
+                      'image': right.get('image') or left.get('image') or '',
+                      'imageSize': right.get('imageSize') or left.get('imageSize') or [],
+                  }
+                  rows.append(row)
+                  canonical_key = (
+                      kind,
+                      right.get('floor', ''),
+                      route_pair_key(key),
+                      min(str(row['geometryBefore']), str(row['geometryAfter'])),
+                      max(str(row['geometryBefore']), str(row['geometryAfter'])),
+                  )
+                  if canonical_key not in seen_canonical:
+                      seen_canonical.add(canonical_key)
+                      canonical_rows.append(row)
+
+          for field in (
+              'pointIncreaseRouteCount',
+              'turnIncreaseRouteCount',
+              'lengthIncreaseRouteCount',
+              'clearanceDecreaseRouteCount',
+          ):
+              if totals[field]:
+                  raise SystemExit(f'unexpected regression {field}={totals[field]}')
+          if totals['changedRouteCount'] == 0:
+              raise SystemExit('route simplification changed no route geometry')
+          if totals['changedRouteCount'] != totals['reducedPointRouteCount']:
+              raise SystemExit(
+                  'every changed route must remove at least one intermediate point: '
+                  f"changed={totals['changedRouteCount']} "
+                  f"reduced={totals['reducedPointRouteCount']}"
+              )
+
+          totals['canonicalChangedRouteCount'] = len(canonical_rows)
+          totals['pointsRemoved'] = totals['totalPointsBefore'] - totals['totalPointsAfter']
+          totals['turnsRemoved'] = totals['totalTurnsBefore'] - totals['totalTurnsAfter']
+          totals['pointReductionPercent'] = round(
+              totals['pointsRemoved'] / totals['totalPointsBefore'] * 100,
+              3,
+          ) if totals['totalPointsBefore'] else 0.0
+
+          sort_key = lambda row: (
+              -int(row['pointsRemoved']),
+              -int(row['turnsRemoved']),
+              -int(row['turnsBefore']),
+              floor_number(row['floor']),
+              str(row['key']),
+          )
+          rows.sort(key=sort_key)
+          canonical_rows.sort(key=sort_key)
+
+          csv_fields = [
+              'kind', 'key', 'floor', 'pointsBefore', 'pointsAfter',
+              'pointsRemoved', 'turnsBefore', 'turnsAfter', 'turnsRemoved',
+              'routeLengthBefore', 'routeLengthAfter',
+              'clearanceBefore', 'clearanceAfter',
+              'geometryBefore', 'geometryAfter',
+          ]
+          with (report_dir / 'route-changes.csv').open(
+              'w', encoding='utf-8', newline=''
+          ) as handle:
+              writer = csv.DictWriter(handle, fieldnames=csv_fields, lineterminator='\n')
+              writer.writeheader()
+              writer.writerows(
+                  {field: row[field] for field in csv_fields} for row in rows
+              )
+
+          def font(size: int, bold: bool = False):
+              candidates = [
+                  Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc' if bold else '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'),
+                  Path('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf' if bold else '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'),
+              ]
+              for candidate in candidates:
+                  if candidate.is_file():
+                      return ImageFont.truetype(str(candidate), size=size)
+              return ImageFont.load_default()
+
+          title_font = font(26, True)
+          detail_font = font(18)
+          small_font = font(15)
+
+          def pixel_points(points, width: int, height: int):
+              return [
+                  (
+                      float(point[0]) * width / 100.0,
+                      float(point[1]) * height / 100.0,
+                  )
+                  for point in points
+              ]
+
+          def crop_box(all_points, width: int, height: int):
+              xs = [point[0] for point in all_points]
+              ys = [point[1] for point in all_points]
+              route_width = max(max(xs) - min(xs), width * 0.10)
+              route_height = max(max(ys) - min(ys), height * 0.10)
+              crop_width = min(width, max(route_width * 1.42, width * 0.24))
+              crop_height = min(height, max(route_height * 1.42, height * 0.24))
+              center_x = (min(xs) + max(xs)) / 2
+              center_y = (min(ys) + max(ys)) / 2
+              left = max(0.0, min(width - crop_width, center_x - crop_width / 2))
+              top = max(0.0, min(height - crop_height, center_y - crop_height / 2))
+              return (
+                  int(round(left)),
+                  int(round(top)),
+                  int(round(left + crop_width)),
+                  int(round(top + crop_height)),
+              )
+
+          map_cache: dict[Path, Image.Image] = {}
+          manifest = []
+          cards = []
+          for index, row in enumerate(canonical_rows, start=1):
+              map_name = Path(str(row['image'])).name
+              map_path = Path('miniprogram/assets/floor-maps') / map_name
+              if not map_path.is_file():
+                  raise SystemExit(f'missing floor map for visual audit: {map_path}')
+              if map_path not in map_cache:
+                  map_cache[map_path] = Image.open(map_path).convert('RGB')
+              base = map_cache[map_path]
+              before_full = pixel_points(row['beforePoints'], base.width, base.height)
+              after_full = pixel_points(row['afterPoints'], base.width, base.height)
+              box = crop_box(before_full + after_full, base.width, base.height)
+              crop = base.crop(box).convert('RGB')
+              scale = min(920 / crop.width, 590 / crop.height)
+              rendered_size = (
+                  max(1, int(round(crop.width * scale))),
+                  max(1, int(round(crop.height * scale))),
+              )
+              if rendered_size != crop.size:
+                  crop = crop.resize(rendered_size, Image.Resampling.LANCZOS)
+              sx = crop.width / (box[2] - box[0])
+              sy = crop.height / (box[3] - box[1])
+
+              def local(points):
+                  return [
+                      (
+                          int(round((x - box[0]) * sx)),
+                          int(round((y - box[1]) * sy)),
+                      )
+                      for x, y in points
+                  ]
+
+              before_local = local(before_full)
+              after_local = local(after_full)
+              draw = ImageDraw.Draw(crop)
+              width = max(5, int(round(max(crop.width, crop.height) / 190)))
+              if len(before_local) >= 2:
+                  draw.line(before_local, fill='white', width=width + 8, joint='curve')
+                  draw.line(before_local, fill=(220, 45, 45), width=width + 2, joint='curve')
+              if len(after_local) >= 2:
+                  draw.line(after_local, fill=(18, 36, 48), width=width + 7, joint='curve')
+                  draw.line(after_local, fill=(0, 205, 145), width=width, joint='curve')
+              radius = max(9, width + 3)
+              for point, color in (
+                  (after_local[0], (35, 110, 230)),
+                  (after_local[-1], (255, 190, 0)),
+              ):
+                  x, y = point
+                  draw.ellipse(
+                      (x - radius, y - radius, x + radius, y + radius),
+                      fill=color,
+                      outline='white',
+                      width=max(3, width // 2),
+                  )
+
+              card = Image.new('RGB', (960, 760), (244, 247, 250))
+              card.paste(crop, ((960 - crop.width) // 2, 145 + (590 - crop.height) // 2))
+              card_draw = ImageDraw.Draw(card)
+              card_draw.text(
+                  (18, 12),
+                  f"#{index:03d} {row['floor']} {row['kind']} {row['key']}",
+                  fill=(20, 45, 72),
+                  font=title_font,
+              )
+              card_draw.text(
+                  (18, 51),
+                  f"points {row['pointsBefore']} -> {row['pointsAfter']}  "
+                  f"turns {row['turnsBefore']} -> {row['turnsAfter']}  "
+                  f"removed {row['pointsRemoved']}",
+                  fill=(45, 55, 65),
+                  font=detail_font,
+              )
+              card_draw.text(
+                  (18, 83),
+                  f"length {row['routeLengthBefore']:.6f} -> {row['routeLengthAfter']:.6f}  "
+                  f"clearance {row['clearanceBefore']:.3f} -> {row['clearanceAfter']:.3f}",
+                  fill=(45, 55, 65),
+                  font=detail_font,
+              )
+              card_draw.text(
+                  (18, 113),
+                  'red=before  green=after  blue=start  yellow=end',
+                  fill=(80, 80, 85),
+                  font=small_font,
+              )
+              card_draw.rectangle((0, 0, 959, 759), outline=(155, 165, 175), width=2)
+              name = f'route-{index:03d}.jpg'
+              card.save(card_dir / name, quality=91, subsampling=0)
+              cards.append(card)
+              manifest.append(
+                  {
+                      'index': index,
+                      'image': f'comparison-cards/{name}',
+                      **{field: row[field] for field in csv_fields},
+                  }
+              )
+
+          columns, rows_per_sheet = 4, 4
+          gap = 14
+          sheet_width = columns * 960 + (columns + 1) * gap
+          sheet_height = rows_per_sheet * 760 + (rows_per_sheet + 1) * gap
+          per_sheet = columns * rows_per_sheet
+          for start in range(0, len(cards), per_sheet):
+              sheet = Image.new('RGB', (sheet_width, sheet_height), (228, 233, 238))
+              for offset, card in enumerate(cards[start:start + per_sheet]):
+                  column = offset % columns
+                  row_number = offset // columns
+                  sheet.paste(
+                      card,
+                      (gap + column * (960 + gap), gap + row_number * (760 + gap)),
+                  )
+              sheet.save(
+                  sheet_dir / f'sheet-{start // per_sheet + 1:02d}.jpg',
+                  quality=89,
+                  subsampling=0,
+              )
+
+          summary = {
+              'schemaVersion': 1,
+              **totals,
+              'comparisonSheetCount': math.ceil(len(cards) / per_sheet),
+              'comparisonCardCount': len(cards),
+              'topChanges': [
+                  {field: row[field] for field in csv_fields}
+                  for row in rows[:100]
+              ],
+          }
+          (report_dir / 'generation-summary.json').write_text(
+              json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False) + '\n',
+              encoding='utf-8',
+          )
+          (report_dir / 'visual-manifest.json').write_text(
+              json.dumps(
+                  {'schemaVersion': 1, 'routes': manifest},
+                  ensure_ascii=False,
+                  indent=2,
+                  allow_nan=False,
+              ) + '\n',
+              encoding='utf-8',
+          )
+          print(json.dumps(summary, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Run complete deterministic verification
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            npm test
+            npm run test:python
+            node scripts/build-web-bundle.js --check web-demo/navigation.bundle.js
+            python scripts/generate-floor-nav-paths.py --floor-dir miniprogram/assets/floor-maps --check
+            python scripts/generate-same-floor-paths.py --floor-dir miniprogram/assets/floor-maps --check
+            node scripts/check-routes.js
+            python scripts/audit-route-connectivity.py
+            node scripts/check-syntax.js
+            npm run verify:candidate
+            git diff --check
+          } 2>&1 | tee reports/route-visual-review/verification.log
+
+      - name: Upload complete route visual audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: route-visual-audit
+          path: reports/route-visual-review
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Commit verified implementation and generated routes
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          rm -rf reports/route-visual-review/comparison-cards
+          rm -rf reports/route-visual-review/comparison-sheets
+          rm -f reports/route-visual-review/visual-manifest.json
+          rm -f reports/route-visual-review/regression.log
+          rm -f reports/route-visual-review/regression-outcome.txt
+          git rm -f --ignore-unmatch \
+            .github/route-simplification-apply-request \
+            .github/workflows/apply-route-simplification.yml \
+            .github/workflows/route-visual-review.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add reports/route-visual-review/regression.log reports/route-visual-review/regression-outcome.txt
-          if ! git diff --cached --quiet; then
-            git commit -m 'Record route regression result'
-            git push origin HEAD:agent/route-visual-audit
-          fi
-      - name: Enforce regression result
-        if: steps.regression.outcome == 'failure'
-        run: exit 1
+          git add \
+            scripts/safe_path_solver.py \
+            tests/python/test_safe_path_solver.py \
+            tests/python/test_route_visual_simplification.py \
+            config/routing-policy.json \
+            miniprogram/data/sameFloorPaths.js \
+            miniprogram/data/floorNavPaths.js \
+            miniprogram/data/elevatorShafts.js \
+            web-demo/navigation.bundle.js \
+            reports/route-visual-review
+          git commit -m 'Simplify redundant navigation route geometry'
+          git push origin HEAD:agent/route-visual-audit
