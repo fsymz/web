@@ -51,7 +51,7 @@ jobs:
           git show origin/main:miniprogram/data/sameFloorPaths.js > /tmp/route-baseline/sameFloorPaths.js
           git show origin/main:miniprogram/data/floorNavPaths.js > /tmp/route-baseline/floorNavPaths.js
 
-      - name: Apply route simplification fix
+      - name: Apply future-generator route-selection fix
         run: python scripts/apply-route-simplification.py
 
       - name: Run focused regression tests
@@ -65,18 +65,24 @@ jobs:
             tests/python/test_routing_surface.py \
             -q 2>&1 | tee reports/route-visual-review/focused-tests.log
 
-      - name: Regenerate route data and web bundle
+      - name: Conservatively simplify existing verified routes
+        id: simplify
+        continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
-          {
-            python scripts/generate-floor-nav-paths.py --floor-dir miniprogram/assets/floor-maps
-            python scripts/generate-same-floor-paths.py --floor-dir miniprogram/assets/floor-maps
-            node scripts/build-web-bundle.js --output web-demo/navigation.bundle.js
-          } 2>&1 | tee reports/route-visual-review/generation.log
+          python scripts/simplify-existing-route-paths.py \
+            --floor-dir miniprogram/assets/floor-maps \
+            --report reports/route-visual-review/simplification-summary.json \
+            2>&1 | tee reports/route-visual-review/simplification.log
+
+      - name: Rebuild web bundle from simplified routes
+        if: always()
+        run: node scripts/build-web-bundle.js --output web-demo/navigation.bundle.js
 
       - name: Export every route for visual review
         id: visual_audit
+        if: always()
         continue-on-error: true
         shell: bash
         run: |
@@ -89,15 +95,19 @@ jobs:
             2>&1 | tee reports/route-visual-review/export.log
 
       - name: Run complete deterministic verification
+        id: verification
+        if: always()
+        continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
           {
             npm test
             npm run test:python
+            python scripts/simplify-existing-route-paths.py \
+              --floor-dir miniprogram/assets/floor-maps \
+              --check
             node scripts/build-web-bundle.js --check web-demo/navigation.bundle.js
-            python scripts/generate-floor-nav-paths.py --floor-dir miniprogram/assets/floor-maps --check
-            python scripts/generate-same-floor-paths.py --floor-dir miniprogram/assets/floor-maps --check
             node scripts/check-routes.js
             python scripts/audit-route-connectivity.py
             node scripts/check-syntax.js
@@ -114,12 +124,12 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Enforce automatic visual-audit gates
-        if: steps.visual_audit.outcome == 'failure'
-        run: exit 1
-
       - name: Commit verified implementation and generated routes
-        if: github.event_name == 'pull_request'
+        if: >-
+          github.event_name == 'pull_request' &&
+          steps.simplify.outcome == 'success' &&
+          steps.visual_audit.outcome == 'success' &&
+          steps.verification.outcome == 'success'
         shell: bash
         env:
           HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
@@ -136,6 +146,7 @@ jobs:
           git add \
             scripts/apply-route-simplification.py \
             scripts/export-all-route-visual-audit.py \
+            scripts/simplify-existing-route-paths.py \
             scripts/safe_path_solver.py \
             scripts/routing_surface.py \
             tests/python/test_safe_path_solver.py \
@@ -144,7 +155,6 @@ jobs:
             config/routing-policy.json \
             miniprogram/data/sameFloorPaths.js \
             miniprogram/data/floorNavPaths.js \
-            miniprogram/data/elevatorShafts.js \
             web-demo/navigation.bundle.js \
             reports/route-visual-review
           if git diff --cached --quiet; then
@@ -153,3 +163,15 @@ jobs:
           fi
           git commit -m 'Simplify and audit navigation route geometry'
           git push origin "HEAD:${HEAD_BRANCH}"
+
+      - name: Enforce all route-audit gates
+        if: >-
+          always() &&
+          (steps.simplify.outcome == 'failure' ||
+           steps.visual_audit.outcome == 'failure' ||
+           steps.verification.outcome == 'failure')
+        run: |
+          echo "simplify=${{ steps.simplify.outcome }}"
+          echo "visual_audit=${{ steps.visual_audit.outcome }}"
+          echo "verification=${{ steps.verification.outcome }}"
+          exit 1
