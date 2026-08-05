@@ -45,6 +45,9 @@ jobs:
           python -m pip install -r requirements.txt
           npm ci --ignore-scripts
 
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
       - name: Load main-branch route baseline
         shell: bash
         run: |
@@ -110,6 +113,7 @@ jobs:
             find tests -maxdepth 1 -name '*.test.js' \
               ! -name 'public-destinations.test.js' -print0 \
               | xargs -0 node --test
+            npm run test:web
             node scripts/check-routes.js
             node scripts/check-syntax.js
             npm run verify:candidate
@@ -132,9 +136,10 @@ jobs:
              against the absent authoritative high-resolution floor-map directory.
 
           The workflow excludes only those environment-bound checks. It still runs
-          all other Python tests, all other top-level Node tests, route endpoint and
-          metric validation, syntax validation, bundle freshness, and the complete
-          candidate-release gate. Strict patient-release authorization remains off.
+          all other Python tests, all other top-level Node tests, the browser SVG
+          rendering test, route endpoint and metric validation, syntax validation,
+          bundle freshness, and the complete candidate-release gate. Strict
+          patient-release authorization remains off.
           EOF
 
       - name: Upload every visual card and review sheet
