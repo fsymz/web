@@ -104,7 +104,7 @@ jobs:
           {
             python -m pytest tests/python -q \
               --ignore=tests/python/test_audit_read_only.py \
-              --basetemp=reports/test-temp/python
+              --basetemp=/tmp/route-pytest
             find tests -maxdepth 1 -name '*.test.js' \
               ! -name 'public-destinations.test.js' -print0 \
               | xargs -0 node --test
