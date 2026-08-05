@@ -8,6 +8,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
+OLD_VERSION = "grid-a-star-visible-local-v1"
+NEW_VERSION = "grid-a-star-visible-local-v2"
 
 
 def replace_once_or_verify(
@@ -20,6 +22,22 @@ def replace_once_or_verify(
     text = path.read_text(encoding="utf-8")
     if old in text:
         path.write_text(text.replace(old, new, 1), encoding="utf-8", newline="\n")
+        return True
+    if new in text:
+        return False
+    raise RuntimeError(f"{path}: cannot locate {label}")
+
+
+def replace_all_or_verify(
+    path: Path,
+    old: str,
+    new: str,
+    *,
+    label: str,
+) -> bool:
+    text = path.read_text(encoding="utf-8")
+    if old in text:
+        path.write_text(text.replace(old, new), encoding="utf-8", newline="\n")
         return True
     if new in text:
         return False
@@ -48,17 +66,34 @@ def patch_policy() -> bool:
     path = ROOT / "config" / "routing-policy.json"
     document = json.loads(path.read_text(encoding="utf-8-sig"))
     current = document.get("algorithmVersion")
-    if current == "grid-a-star-visible-local-v2":
+    if current == NEW_VERSION:
         return False
-    if current != "grid-a-star-visible-local-v1":
+    if current != OLD_VERSION:
         raise RuntimeError(f"unexpected routing algorithm version: {current!r}")
-    document["algorithmVersion"] = "grid-a-star-visible-local-v2"
+    document["algorithmVersion"] = NEW_VERSION
     path.write_text(
         json.dumps(document, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
         encoding="utf-8",
         newline="\n",
     )
     return True
+
+
+def patch_versioned_loader_and_tests() -> bool:
+    changed = False
+    changed |= replace_all_or_verify(
+        ROOT / "scripts" / "routing_surface.py",
+        OLD_VERSION,
+        NEW_VERSION,
+        label="routing-surface algorithm version",
+    )
+    changed |= replace_all_or_verify(
+        ROOT / "tests" / "python" / "test_routing_surface.py",
+        OLD_VERSION,
+        NEW_VERSION,
+        label="routing-surface test version fixtures",
+    )
+    return changed
 
 
 def patch_regression_expectation() -> bool:
@@ -75,6 +110,7 @@ def main() -> int:
     changed = {
         "solver": patch_solver(),
         "policy": patch_policy(),
+        "versionedLoaderAndTests": patch_versioned_loader_and_tests(),
         "regression": patch_regression_expectation(),
     }
     print(json.dumps(changed, ensure_ascii=False, sort_keys=True))
