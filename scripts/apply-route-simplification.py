@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply the reviewed equal-cost route simplification change idempotently."""
+"""Apply the reviewed route-simplification source changes idempotently."""
 
 from __future__ import annotations
 
@@ -12,13 +12,7 @@ OLD_VERSION = "grid-a-star-visible-local-v1"
 NEW_VERSION = "grid-a-star-visible-local-v2"
 
 
-def replace_once_or_verify(
-    path: Path,
-    old: str,
-    new: str,
-    *,
-    label: str,
-) -> bool:
+def replace_once_or_verify(path: Path, old: str, new: str, *, label: str) -> bool:
     text = path.read_text(encoding="utf-8")
     if old in text:
         path.write_text(text.replace(old, new, 1), encoding="utf-8", newline="\n")
@@ -28,13 +22,7 @@ def replace_once_or_verify(
     raise RuntimeError(f"{path}: cannot locate {label}")
 
 
-def replace_all_or_verify(
-    path: Path,
-    old: str,
-    new: str,
-    *,
-    label: str,
-) -> bool:
+def replace_all_or_verify(path: Path, old: str, new: str, *, label: str) -> bool:
     text = path.read_text(encoding="utf-8")
     if old in text:
         path.write_text(text.replace(old, new), encoding="utf-8", newline="\n")
@@ -106,13 +94,12 @@ def patch_regression_expectation() -> bool:
     )
 
 
-def patch_existing_route_postprocessor() -> bool:
-    path = ROOT / "scripts" / "simplify-existing-route-paths.py"
+def patch_visual_audit_exact_collinearity() -> bool:
     return replace_once_or_verify(
-        path,
-        """        canonical_updated = update_record(\n            representative,\n            surface=surface,\n            pixels=simplified_pixels,\n            turn_angle_degrees=turn_angle_degrees,\n        )\n        canonical_updated_points = canonical_updated[\"points\"]\n        changed_geometry = canonical_updated_points != canonical\n        if changed_geometry:\n            summary[\"changedUniqueGeometryCount\"] += 1\n\n        for key, record, reversed_from_record in members:\n            points_before = normalized_points(record.get(\"points\"), label=key)\n            updated = dict(canonical_updated)\n            if reversed_from_record:\n                updated[\"points\"] = [list(point) for point in reversed(canonical_updated_points)]\n                indexes = canonical_updated[\"semanticPointIndexes\"]\n                updated[\"semanticPointIndexes\"] = [\n                    len(canonical_updated_points) - 1 - index\n                    for index in reversed(indexes)\n                ]\n            else:\n                updated[\"points\"] = [list(point) for point in canonical_updated_points]\n                updated[\"semanticPointIndexes\"] = list(canonical_updated[\"semanticPointIndexes\"])\n            output[key] = updated\n            summary[\"pointsBefore\"] += len(points_before)\n            summary[\"pointsAfter\"] += len(updated[\"points\"])\n            summary[\"turnsAfter\"] += int(updated.get(\"effectiveTurnCount\") or 0)\n            if updated[\"points\"] != points_before:\n                summary[\"changedRouteCount\"] += 1\n""",
-        """        canonical_updated_points = [\n            list(point)\n            for point in _quality(\n                surface,\n                simplified_pixels,\n                turn_angle_degrees=turn_angle_degrees,\n            )[0]\n        ]\n        changed_geometry = canonical_updated_points != canonical\n        if changed_geometry:\n            summary[\"changedUniqueGeometryCount\"] += 1\n\n        for key, record, reversed_from_record in members:\n            points_before = normalized_points(record.get(\"points\"), label=key)\n            oriented_pixels = (\n                list(reversed(simplified_pixels))\n                if reversed_from_record\n                else list(simplified_pixels)\n            )\n            updated = update_record(\n                record,\n                surface=surface,\n                pixels=oriented_pixels,\n                turn_angle_degrees=turn_angle_degrees,\n            )\n            output[key] = updated\n            summary[\"pointsBefore\"] += len(points_before)\n            summary[\"pointsAfter\"] += len(updated[\"points\"])\n            summary[\"turnsAfter\"] += int(updated.get(\"effectiveTurnCount\") or 0)\n            if updated[\"points\"] != points_before:\n                summary[\"changedRouteCount\"] += 1\n""",
-        label="per-route metadata-preserving postprocessor block",
+        ROOT / "scripts" / "export-all-route-visual-audit.py",
+        "    redundant = sum(angle < 0.01 for angle in angles)\n",
+        "    redundant = sum(angle < 1e-9 for angle in angles)\n",
+        label="exact-collinearity audit threshold",
     )
 
 
@@ -122,7 +109,7 @@ def main() -> int:
         "policy": patch_policy(),
         "versionedLoaderAndTests": patch_versioned_loader_and_tests(),
         "regression": patch_regression_expectation(),
-        "postprocessorMetadata": patch_existing_route_postprocessor(),
+        "visualAuditExactCollinearity": patch_visual_audit_exact_collinearity(),
     }
     print(json.dumps(changed, ensure_ascii=False, sort_keys=True))
     return 0
