@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
+
 import numpy as np
 
 from routing_surface import RoutingSurface, line_is_safe
@@ -26,6 +29,22 @@ def _open_surface(width: int, height: int) -> RoutingSurface:
     )
 
 
+def _load_existing_route_simplifier():
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "scripts"
+        / "simplify-existing-route-paths.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "simplify_existing_route_paths",
+        path,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_equal_quality_label_prefers_fewer_segments() -> None:
     simpler = TurnLabel(8.0, 10.0, (0, 8))
     redundant = TurnLabel(8.0, 10.0, tuple(range(9)))
@@ -50,3 +69,34 @@ def test_optimizer_collapses_visible_collinear_seed_points() -> None:
     assert status == "optimized"
     assert path == [seed[0], seed[-1]]
     assert line_is_safe(surface, path[0], path[1])
+
+
+def test_existing_route_simplifier_preserves_input_route_order() -> None:
+    simplifier = _load_existing_route_simplifier()
+    records = {
+        "route-z": {
+            "floor": "3楼",
+            "image": "/assets/floor-maps/3F.jpg",
+            "imageSize": [100, 100],
+            "points": [[90, 90]],
+            "routeLength": 0,
+            "coLocated": True,
+        },
+        "route-a": {
+            "floor": "3楼",
+            "image": "/assets/floor-maps/3F.jpg",
+            "imageSize": [100, 100],
+            "points": [[10, 10]],
+            "routeLength": 0,
+            "coLocated": True,
+        },
+    }
+
+    simplified, _summary = simplifier.simplify_route_file(
+        records,
+        routing_document={},
+        floor_dir=Path("."),
+        turn_angle_degrees=25,
+    )
+
+    assert list(simplified) == list(records)
