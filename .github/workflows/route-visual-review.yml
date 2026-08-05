@@ -3,15 +3,17 @@ name: Exhaustive route visual review
 on:
   pull_request:
     branches: [main]
-    types: [ready_for_review, reopened, synchronize]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: route-visual-review-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   audit:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -51,9 +53,6 @@ jobs:
           git show origin/main:miniprogram/data/sameFloorPaths.js > /tmp/route-baseline/sameFloorPaths.js
           git show origin/main:miniprogram/data/floorNavPaths.js > /tmp/route-baseline/floorNavPaths.js
 
-      - name: Apply future-generator route-selection fix
-        run: python scripts/apply-route-simplification.py
-
       - name: Run focused regression tests
         shell: bash
         run: |
@@ -65,7 +64,7 @@ jobs:
             tests/python/test_routing_surface.py \
             -q 2>&1 | tee reports/route-visual-review/focused-tests.log
 
-      - name: Simplify existing routes on the scaled runtime-map audit surface
+      - name: Check that committed routes are already simplified
         id: simplify
         continue-on-error: true
         shell: bash
@@ -73,12 +72,15 @@ jobs:
           set -o pipefail
           python scripts/simplify-existing-route-paths.py \
             --floor-dir miniprogram/assets/floor-maps \
-            --report reports/route-visual-review/simplification-summary.json \
-            2>&1 | tee reports/route-visual-review/simplification.log
+            --report reports/route-visual-review/idempotence-summary.json \
+            --check \
+            2>&1 | tee reports/route-visual-review/idempotence.log
 
-      - name: Rebuild web bundle from simplified routes
+      - name: Check that the committed web bundle is current
+        id: bundle
         if: always()
-        run: node scripts/build-web-bundle.js --output web-demo/navigation.bundle.js
+        continue-on-error: true
+        run: node scripts/build-web-bundle.js --check web-demo/navigation.bundle.js
 
       - name: Export every route for visual review
         id: visual_audit
@@ -108,13 +110,13 @@ jobs:
             find tests -maxdepth 1 -name '*.test.js' \
               ! -name 'public-destinations.test.js' -print0 \
               | xargs -0 node --test
-            python scripts/simplify-existing-route-paths.py \
-              --floor-dir miniprogram/assets/floor-maps \
-              --check
-            node scripts/build-web-bundle.js --check web-demo/navigation.bundle.js
             node scripts/check-routes.js
             node scripts/check-syntax.js
             npm run verify:candidate
+            git diff --exit-code -- \
+              miniprogram/data/sameFloorPaths.js \
+              miniprogram/data/floorNavPaths.js \
+              web-demo/navigation.bundle.js
             git diff --check
           } 2>&1 | tee reports/route-visual-review/verification.log
 
@@ -144,54 +146,16 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Commit verified implementation and generated routes
-        if: >-
-          github.event_name == 'pull_request' &&
-          steps.simplify.outcome == 'success' &&
-          steps.visual_audit.outcome == 'success' &&
-          steps.verification.outcome == 'success'
-        shell: bash
-        env:
-          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
-        run: |
-          rm -rf reports/route-visual-review/all-route-cards
-          rm -rf reports/route-visual-review/all-route-sheets
-          git rm -f --ignore-unmatch \
-            .github/route-simplification-apply-request \
-            .github/workflows/apply-route-simplification.yml \
-            reports/route-visual-review/regression.log \
-            reports/route-visual-review/regression-outcome.txt
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add \
-            scripts/apply-route-simplification.py \
-            scripts/export-all-route-visual-audit.py \
-            scripts/simplify-existing-route-paths.py \
-            scripts/safe_path_solver.py \
-            scripts/routing_surface.py \
-            tests/python/test_safe_path_solver.py \
-            tests/python/test_route_visual_simplification.py \
-            tests/python/test_routing_surface.py \
-            config/routing-policy.json \
-            miniprogram/data/sameFloorPaths.js \
-            miniprogram/data/floorNavPaths.js \
-            web-demo/navigation.bundle.js \
-            reports/route-visual-review
-          if git diff --cached --quiet; then
-            echo 'No verified changes to commit.'
-            exit 0
-          fi
-          git commit -m 'Simplify and audit navigation route geometry'
-          git push origin "HEAD:${HEAD_BRANCH}"
-
       - name: Enforce all route-audit gates
         if: >-
           always() &&
           (steps.simplify.outcome == 'failure' ||
+           steps.bundle.outcome == 'failure' ||
            steps.visual_audit.outcome == 'failure' ||
            steps.verification.outcome == 'failure')
         run: |
           echo "simplify=${{ steps.simplify.outcome }}"
+          echo "bundle=${{ steps.bundle.outcome }}"
           echo "visual_audit=${{ steps.visual_audit.outcome }}"
           echo "verification=${{ steps.verification.outcome }}"
           exit 1
