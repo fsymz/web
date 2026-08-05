@@ -106,12 +106,23 @@ def patch_regression_expectation() -> bool:
     )
 
 
+def patch_existing_route_postprocessor() -> bool:
+    path = ROOT / "scripts" / "simplify-existing-route-paths.py"
+    return replace_once_or_verify(
+        path,
+        """        canonical_updated = update_record(\n            representative,\n            surface=surface,\n            pixels=simplified_pixels,\n            turn_angle_degrees=turn_angle_degrees,\n        )\n        canonical_updated_points = canonical_updated[\"points\"]\n        changed_geometry = canonical_updated_points != canonical\n        if changed_geometry:\n            summary[\"changedUniqueGeometryCount\"] += 1\n\n        for key, record, reversed_from_record in members:\n            points_before = normalized_points(record.get(\"points\"), label=key)\n            updated = dict(canonical_updated)\n            if reversed_from_record:\n                updated[\"points\"] = [list(point) for point in reversed(canonical_updated_points)]\n                indexes = canonical_updated[\"semanticPointIndexes\"]\n                updated[\"semanticPointIndexes\"] = [\n                    len(canonical_updated_points) - 1 - index\n                    for index in reversed(indexes)\n                ]\n            else:\n                updated[\"points\"] = [list(point) for point in canonical_updated_points]\n                updated[\"semanticPointIndexes\"] = list(canonical_updated[\"semanticPointIndexes\"])\n            output[key] = updated\n            summary[\"pointsBefore\"] += len(points_before)\n            summary[\"pointsAfter\"] += len(updated[\"points\"])\n            summary[\"turnsAfter\"] += int(updated.get(\"effectiveTurnCount\") or 0)\n            if updated[\"points\"] != points_before:\n                summary[\"changedRouteCount\"] += 1\n""",
+        """        canonical_updated_points = [\n            list(point)\n            for point in _quality(\n                surface,\n                simplified_pixels,\n                turn_angle_degrees=turn_angle_degrees,\n            )[0]\n        ]\n        changed_geometry = canonical_updated_points != canonical\n        if changed_geometry:\n            summary[\"changedUniqueGeometryCount\"] += 1\n\n        for key, record, reversed_from_record in members:\n            points_before = normalized_points(record.get(\"points\"), label=key)\n            oriented_pixels = (\n                list(reversed(simplified_pixels))\n                if reversed_from_record\n                else list(simplified_pixels)\n            )\n            updated = update_record(\n                record,\n                surface=surface,\n                pixels=oriented_pixels,\n                turn_angle_degrees=turn_angle_degrees,\n            )\n            output[key] = updated\n            summary[\"pointsBefore\"] += len(points_before)\n            summary[\"pointsAfter\"] += len(updated[\"points\"])\n            summary[\"turnsAfter\"] += int(updated.get(\"effectiveTurnCount\") or 0)\n            if updated[\"points\"] != points_before:\n                summary[\"changedRouteCount\"] += 1\n""",
+        label="per-route metadata-preserving postprocessor block",
+    )
+
+
 def main() -> int:
     changed = {
         "solver": patch_solver(),
         "policy": patch_policy(),
         "versionedLoaderAndTests": patch_versioned_loader_and_tests(),
         "regression": patch_regression_expectation(),
+        "postprocessorMetadata": patch_existing_route_postprocessor(),
     }
     print(json.dumps(changed, ensure_ascii=False, sort_keys=True))
     return 0
